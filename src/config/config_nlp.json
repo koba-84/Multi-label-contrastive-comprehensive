@@ -1,0 +1,18 @@
+{
+    "dataset_name": ["aapd"],
+    "SEED": [59],
+    "lr": [5e-5],
+    "lr_adding": [5e-5],
+    "name_model": "roberta-base",
+    "max_len": 10,
+    "wd": 0.01,
+    "dropout": 0.1,
+    "epochs": [1],
+    "batch_size": [256],
+    "temp": [0.1],
+    "projection_dim": 256,
+    "beta": [0.1],
+    "alpha": [0],
+    "loss" : ["proto", "msc", "base", "mscrg", "mscwrg", "mulsupcon"],
+    "task_type": "NLP"                                                                                            
+}
