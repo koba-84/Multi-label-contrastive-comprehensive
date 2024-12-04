@@ -170,4 +170,4 @@ test.ipynb
 src/nohup.out
 requirements_nlp.txt
 src/config_nlp/*
-src/main.py
+
