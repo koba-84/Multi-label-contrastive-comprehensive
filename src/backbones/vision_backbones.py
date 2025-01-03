@@ -14,11 +14,12 @@ def get_vision_backbone(model_name, pretrained=True,weights=None):
     # If a weights file is provided, load the checkpoint from the ckpt folder nan
     if weights is None :
         raise ValueError("Weights should be provided (default is imagenet)")
-    if weights == 'random':
+    elif weights == 'random':
         model = getattr(models, model_name)(pretrained=False)
         
-    elif weights != 'imagenet':
+    elif weights == 'imagenet':
         model = getattr(models, model_name)(pretrained=True)
+    else:
         weights_path = os.path.join('ckpt', weights)
         print(f"===== Loading weights from {weights_path} =====")
         checkpoint = torch.load(weights_path)

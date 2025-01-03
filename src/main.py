@@ -9,7 +9,7 @@ import wandb
 print("Library import done")
 
 ############ To Complete ###############
-os.environ['WANDB_API_KEY'] = ''
+os.environ['WANDB_API_KEY'] = ""
 ENTITY_NAME_WANDB = ""
 #########################################
 
