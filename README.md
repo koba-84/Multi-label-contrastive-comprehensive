@@ -1,7 +1,7 @@
 # Multi-Label Contrastive Learning: A Comprehensive Study
 
 *Official implementation of the papers:  
-[**Exploring Contrastive Learning for Long-Tailed Multi-Label Text Classification**](<https://scholar.google.com/citations?view_op=view_citation&hl=fr&user=W8aMnu8AAAAJ&citation_for_view=W8aMnu8AAAAJ:u5HHmVD_uO8C1>)  
+[**Exploring Contrastive Learning for Long-Tailed Multi-Label Text Classification**](<https://scholar.google.com/citations?view_op=view_citation&hl=fr&user=W8aMnu8AAAAJ&citation_for_view=W8aMnu8AAAAJ:u5HHmVD_uO8C>)  
 and  
 [**Multi-Label Contrastive Learning: A Comprehensive Study**](<https://scholar.google.com/citations?view_op=view_citation&hl=fr&user=W8aMnu8AAAAJ&citation_for_view=W8aMnu8AAAAJ:2osOgNQ5qMEC>)*
 
