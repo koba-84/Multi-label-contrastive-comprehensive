@@ -1,45 +1,61 @@
 # Multi-Label Contrastive Learning: A Comprehensive Study
 
-*Official implementation of the papers:  
-[**Exploring Contrastive Learning for Long-Tailed Multi-Label Text Classification**](<https://scholar.google.com/citations?view_op=view_citation&hl=fr&user=W8aMnu8AAAAJ&citation_for_view=W8aMnu8AAAAJ:u5HHmVD_uO8C>)  
-and  
-[**Multi-Label Contrastive Learning: A Comprehensive Study**](<https://scholar.google.com/citations?view_op=view_citation&hl=fr&user=W8aMnu8AAAAJ&citation_for_view=W8aMnu8AAAAJ:2osOgNQ5qMEC>)*
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 
-## Key Contributions
-- Comprehensive analysis of contrastive learning loss in multi-label classification
-- Evaluation across datasets with varying label counts and training data volumes
-- Performance insights in both computer vision and natural language processing domains
-- Development of a novel loss function to improve multi-label classification performance
+Official implementation of the papers:
+- **[Exploring Contrastive Learning for Long-Tailed Multi-Label Text Classification](https://scholar.google.com/citations?view_op=view_citation&hl=fr&user=W8aMnu8AAAAJ&citation_for_view=W8aMnu8AAAAJ:u5HHmVD_uO8C)**
+- **[Multi-Label Contrastive Learning: A Comprehensive Study](https://scholar.google.com/citations?view_op=view_citation&hl=fr&user=W8aMnu8AAAAJ&citation_for_view=W8aMnu8AAAAJ:2osOgNQ5qMEC)**
 
-## Requirements
-- Python 3.8+
-- See `requirements.txt` for all dependencies
 
-## Installation
+## 🎯 Overview
 
-### 1. Clone the Repository
-```bash
-git clone https://github.com/A-REMPLIR
-cd ???
-```
+This repository provides a comprehensive implementation of contrastive learning approaches for multi-label classification tasks. Our work explores the effectiveness of contrastive learning across various domains including computer vision and natural language processing, with a focus on handling long-tailed label distributions.
 
-### 2. Create Virtual Environment
-```bash
-python3 -m venv env
-source env/bin/activate  # On Windows, use `env\Scripts\activate`
-```
+## ✨ Key Contributions
 
-### 3. Install Dependencies
-```bash
-pip install -r requirements.txt
-```
+- **Comprehensive Analysis**: In-depth evaluation of contrastive learning loss functions in multi-label classification scenarios
+- **Multi-Domain Evaluation**: Performance analysis across datasets with varying label counts and training data volumes
+- **Cross-Modal Insights**: Comparative study between computer vision and natural language processing domains
+- **Novel Loss Function**: Development of an improved loss function specifically designed for multi-label classification performance
 
-## Wandb Setup
-To track all the experimenta, our code use Weight and Biases :
-1. Create a Weights & Biases account at [wandb.ai](https://wandb.ai/)
-2. Get your API key from your wandb profile
-3. In `main.py`, set your Wandb credentials:
+## 🚀 Installation
+
+### Prerequisites
+
+- Python 3.8 or higher
+- CUDA-compatible GPU (recommended for vision experiments)
+
+### Step-by-Step Setup
+
+1. **Clone the Repository**
+   ```bash
+   git clone https://github.com/audibert-alexandre-fra/Multi-label-contrastive-comprehensive
+   cd multi-label-contrastive-comprehensive
+   ```
+
+2. **Create Virtual Environment**
+   ```bash
+   python3 -m venv env
+   source env/bin/activate  # On Windows: env\Scripts\activate
+   ```
+
+3. **Install Dependencies**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+## ⚙️ Configuration
+
+### Weights & Biases Setup
+
+Our experiments use [Weights & Biases](https://wandb.ai/) for experiment tracking:
+
+1. Create an account at [wandb.ai](https://wandb.ai/)
+2. Get your API key from your profile settings
+3. Configure credentials in `main.py`:
+
 ```python
 import os
 
@@ -48,40 +64,53 @@ os.environ['WANDB_API_KEY'] = 'your_wandb_api_key'
 ENTITY_NAME_WANDB = 'your_wandb_username'
 ```
 
-## Running Experiments
+## 🧪 Running Experiments
 
-### NLP Experiments
+### Natural Language Processing
+
 ```bash
 cd src
 python3 main.py --config config/config_nlp.json
 ```
 
-### Computer Vision Experiments
+### Computer Vision
+
 ```bash
 cd src
 python3 main.py --config config/config_vision.json
 ```
-To run non-contrastive losses experiments :
+
+### Non-Contrastive Baseline (BCE Loss)
+
 ```bash
 cd src
 python3 main.py --config config/config_vision_BCE.json
 ```
 
+## 📊 Results & Reproducibility
 
-## Citation
-If you use this work in your research, please cite:
-```
-@article{audibert2024multilabelcontrastive,
-  title={Multi-Label Contrastive Learning: A Comprehensive Study},
-  author={Audibert, Alexandre and Gauffre, Aurélien and Amini, Massih-Reza},
-  journal={TBD},
-  year={2024}
+Detailed experimental results and configurations are provided in the respective config files. For exact reproduction, specific dataset access may be required.
+
+## 📚 Citation
+
+If you find this work useful in your research, please cite our papers:
+
+```bibtex
+@misc{audibert2025multilabelcontrastivelearning,
+      title={Multi-Label Contrastive Learning : A Comprehensive Study}, 
+      author={Alexandre Audibert and Aurélien Gauffre and Massih-Reza Amini},
+      year={2025},
+      eprint={2412.00101},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2412.00101}, 
 }
 ```
 
-## License
-[Specify your license here, e.g., MIT, Apache 2.0]
+## 📄 License
 
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
+---
 
-**Note:** Configurations and exact reproduction  require specific dataset access.
+**Note**: This is a research implementation. For production use, additional testing and validation may be required.
