@@ -14,5 +14,6 @@
     "beta": [0.1],
     "alpha": [0],
     "loss" : ["proto", "msc", "base", "mscrg", "mscwrg", "mulsupcon"],
-    "task_type": "NLP"                                                                                            
+    "task_type": "NLP",
+    "queue_size": [512]
 }
