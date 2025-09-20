@@ -2,6 +2,7 @@ import torch
 import wandb
 import os
 import torch.nn as nn
+import torch.nn.functional as F
 from transformers import AutoTokenizer
 from torch.optim import AdamW
 from utils.utils import set_seed, get_all_preds, save_best_model, save_test_score, compute_test_metrics, save_best_model_train, save_best_model_final, compute_test_metrics_individual
@@ -35,6 +36,7 @@ current_date = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M")
 BATCH_EVAL_TEST = 256
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 WARMUP = 0.05
+MOMENTUM = 0.999
 
 ALL_LR = [1, 1e-1] 
 ALL_WD = [1, 1e-1, 1e-2, 1e-4]
@@ -143,6 +145,25 @@ def trainer(config: Dict, entity_name: str):
 
 
 
+    queue_size = int(config.get("queue_size", 512))
+    config["queue_size"] = queue_size
+
+    key_encoder = deepcopy(model).to(DEVICE)
+    for param in key_encoder.parameters():
+        param.requires_grad = False
+
+    prototype_dtype = model.get_prototype().dtype
+    queue_feats = torch.zeros(queue_size,
+                              config["projection_dim"],
+                              device=DEVICE,
+                              dtype=prototype_dtype)
+    queue_labels = torch.zeros(queue_size,
+                               config["nb_labels"],
+                               device=DEVICE,
+                               dtype=prototype_dtype)
+    queue_ptr = 0
+    queue_filled = 0
+
     # Create optimizer for the query model
  
     optim = set_optimizer(config, model)
@@ -206,18 +227,45 @@ def trainer(config: Dict, entity_name: str):
 
             # Set gradient at 0 grad
             optim.zero_grad(set_to_none=True)
+            current_labels = batch['labels'].to(DEVICE).to(queue_labels.dtype)
             # Cast into precision mixte
             with autocast(device_type='cuda', dtype=torch.float16):
-                # Read Labels
-                current_labels = batch['labels'].to(DEVICE)
-                # Output obtain by the query model
-                output_query, _ = model(input_ids=batch['input_ids'].to(DEVICE),
-                                        attention_mask=batch['attention_mask'].to(DEVICE)) if TASK_TYPE == "NLP" else model(
-                    input_ids=batch['input_ids'].to(DEVICE))
-                # projection / hidden
-                loss = loss_contrastive(output_query=output_query,
-                                        labels_query=current_labels,
-                                        prototype=model.get_prototype())
+                if TASK_TYPE == "NLP":
+                    output_query, _ = model(input_ids=batch['input_ids'].to(DEVICE),
+                                            attention_mask=batch['attention_mask'].to(DEVICE))
+                else:
+                    output_query, _ = model(input_ids=batch['input_ids'].to(DEVICE))
+
+            with torch.no_grad():
+                if TASK_TYPE == "NLP":
+                    output_key, _ = key_encoder(input_ids=batch['input_ids'].to(DEVICE),
+                                                attention_mask=batch['attention_mask'].to(DEVICE))
+                else:
+                    output_key, _ = key_encoder(input_ids=batch['input_ids'].to(DEVICE))
+
+            output_query = output_query.float()
+            output_key = output_key.float()
+            normalize_query = F.normalize(output_query, dim=-1)
+            normalize_key = F.normalize(output_key, dim=-1)
+
+            if queue_filled > 0:
+                queue_feats_for_loss = queue_feats[:queue_filled]
+                queue_labels_for_loss = queue_labels[:queue_filled]
+            else:
+                queue_feats_for_loss = None
+                queue_labels_for_loss = None
+
+            loss_kwargs = dict(output_query=normalize_query,
+                               labels_query=current_labels,
+                               prototype=model.get_prototype())
+
+            if config["loss"] in {"mulsupcon", "msc"}:
+                loss_kwargs.update(queue_feats=queue_feats_for_loss,
+                                   queue_labels=queue_labels_for_loss,
+                                   key_feats=normalize_key,
+                                   key_labels=current_labels)
+
+            loss = loss_contrastive(**loss_kwargs)
             # Backward
             scaler.scale(loss).backward()
             scaler.unscale_(optim)
@@ -229,6 +277,38 @@ def trainer(config: Dict, entity_name: str):
             scaler.update()
             # scheduler step
             lr_scheduler.step()
+            with torch.no_grad():
+                for param_q, param_k in zip(model.parameters(),
+                                            key_encoder.parameters()):
+                    param_k.data.mul_(MOMENTUM).add_(
+                        param_q.data * (1.0 - MOMENTUM))
+
+                batch_size_curr = normalize_key.shape[0]
+                if batch_size_curr == 0:
+                    pass
+                else:
+                    if batch_size_curr > queue_size:
+                        normalize_key = normalize_key[:queue_size]
+                        labels_for_queue = current_labels[:queue_size]
+                        batch_size_curr = queue_size
+                    else:
+                        labels_for_queue = current_labels[:batch_size_curr]
+
+                    labels_for_queue = labels_for_queue.detach().to(queue_labels.dtype)
+                    end_ptr = queue_ptr + batch_size_curr
+                    if end_ptr <= queue_size:
+                        queue_feats[queue_ptr:end_ptr] = normalize_key[:batch_size_curr]
+                        queue_labels[queue_ptr:end_ptr] = labels_for_queue
+                    else:
+                        first_len = queue_size - queue_ptr
+                        queue_feats[queue_ptr:] = normalize_key[:first_len]
+                        queue_labels[queue_ptr:] = labels_for_queue[:first_len]
+                        remaining = batch_size_curr - first_len
+                        if remaining > 0:
+                            queue_feats[:remaining] = normalize_key[first_len:first_len + remaining]
+                            queue_labels[:remaining] = labels_for_queue[first_len:first_len + remaining]
+                    queue_ptr = (queue_ptr + batch_size_curr) % queue_size
+                    queue_filled = min(queue_filled + batch_size_curr, queue_size)
             total_loss += loss.item()
             # print(loss.item())
         current_val_loss = compute_val_loss(model=model,

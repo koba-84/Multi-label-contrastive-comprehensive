@@ -55,40 +55,92 @@ def compute_loss_contrastive(output_features: Tensor,
                             prototype_features: Tensor,
                             alpha: float,
                             beta: float,
-                            temp:float) -> Tensor:
+                            temp: float,
+                            key_features: Tensor = None,
+                            key_labels: Tensor = None,
+                            queue_features: Tensor = None,
+                            queue_labels: Tensor = None) -> Tensor:
     total = labels_query.size(0)
-    # Save Number of Labels
     nb_labels = prototype_features.size(0)
-    # Mask to remove interaction between same instance
-    mask_diagonal = torch.ones(total*(total + nb_labels), device='cuda', dtype=torch.uint8)
-    mask_diagonal[0::(total + nb_labels)+1] = 0
-    mask_diagonal = mask_diagonal.reshape(total, (total + nb_labels))
-    # Compute similarities between queryxquery
-    similarity_query_query = output_features @ output_features.T
-    # Comptue similarities between queryxprototypes
-    similarity_query_prototype = output_features @ prototype_features.T
-    similarity_features = similarity_query_query
-    # print(labels_query.shape, label_query_key.shape)
+    dtype = output_features.dtype
+
     mask_and_features = torch.einsum('ac, bc -> abc', labels_query, labels_query)
     mask_or_features = compute_or(query_tensor=labels_query, key_tensor=labels_query)
-    mask_and_features = mask_and_features * (1/mask_or_features.unsqueeze(2)) * alpha
-    # print(mask_and_features, mask_and_features.shape, label_query_key.shape)
-    normalize = mask_and_features.sum(dim=1) + (- alpha / labels_query.sum(dim=1, keepdim=True) + 1) * labels_query
-    w_features_features = (mask_and_features/(normalize.unsqueeze(1) + EPS)).sum(dim=2)
+    mask_or_features = mask_or_features.unsqueeze(2).clamp_min(1.0)
+    mask_and_features = mask_and_features * (1/mask_or_features) * alpha
+
+    mask_and_key = None
+    similarity_query_key = None
+    key_total = 0
+    if key_features is not None and key_labels is not None and key_features.numel() > 0:
+        key_features = key_features.to(dtype)
+        key_labels = key_labels.to(labels_query.dtype)
+        mask_and_key = torch.einsum('ac,kc->akc', labels_query, key_labels)
+        mask_or_key = compute_or(query_tensor=labels_query, key_tensor=key_labels)
+        mask_or_key = mask_or_key.unsqueeze(2).clamp_min(1.0)
+        mask_and_key = mask_and_key * (1/mask_or_key) * alpha
+        similarity_query_key = output_features @ key_features.T
+        key_total = key_features.size(0)
+
+    mask_and_queue = None
+    similarity_query_queue = None
+    queue_total = 0
+    if queue_features is not None and queue_labels is not None and queue_features.numel() > 0:
+        queue_features = queue_features.to(dtype)
+        queue_labels = queue_labels.to(labels_query.dtype)
+        mask_and_queue = torch.einsum('ac,qc->aqc', labels_query, queue_labels)
+        mask_or_queue = compute_or(query_tensor=labels_query, key_tensor=queue_labels)
+        mask_or_queue = mask_or_queue.unsqueeze(2).clamp_min(1.0)
+        mask_and_queue = mask_and_queue * (1/mask_or_queue) * alpha
+        similarity_query_queue = output_features @ queue_features.T
+        queue_total = queue_features.size(0)
+
+    normalize = mask_and_features.sum(dim=1)
+    if mask_and_key is not None:
+        normalize = normalize + mask_and_key.sum(dim=1)
+    if mask_and_queue is not None:
+        normalize = normalize + mask_and_queue.sum(dim=1)
+    normalize = normalize + (- alpha / labels_query.sum(dim=1, keepdim=True) + 1) * labels_query
+
+    denom = normalize.unsqueeze(1) + EPS
+    w_features_features = (mask_and_features/denom).sum(dim=2)
+
+    parts_features = [output_features @ output_features.T]
+    parts_weights = [w_features_features]
+    section_lengths = [total]
+
+    if mask_and_key is not None:
+        w_features_key = (mask_and_key/denom).sum(dim=2)
+        parts_features.append(similarity_query_key)
+        parts_weights.append(w_features_key)
+        section_lengths.append(key_total)
+
+    if mask_and_queue is not None:
+        w_features_queue = (mask_and_queue/denom).sum(dim=2)
+        parts_features.append(similarity_query_queue)
+        parts_weights.append(w_features_queue)
+        section_lengths.append(queue_total)
+
     w_features_proto = labels_query /(normalize + EPS)
-    # Compute final w, we have to remove the diagonal
-    w = torch.cat((w_features_features, w_features_proto), dim=1) * mask_diagonal
-    # print(w.sum(dim=1))
-    # Concatenate features and proto features
-    final_features = torch.cat((similarity_features, similarity_query_prototype), dim=1)
-    # Normalize denominator
-    normalize_mask = torch.ones(total + nb_labels, device='cuda') * beta
-    normalize_mask[-nb_labels:] = 1
-    # Create a diagonal mask to remove identical element
+    parts_features.append(output_features @ prototype_features.T)
+    parts_weights.append(w_features_proto)
+    section_lengths.append(nb_labels)
+
+    total_refs = sum(section_lengths)
+    mask_diagonal = output_features.new_ones((total, total_refs))
+    if total > 0:
+        indices = torch.arange(total, device=mask_diagonal.device)
+        mask_diagonal[indices, indices] = 0
+
+    w = torch.cat(parts_weights, dim=1) * mask_diagonal
+    final_features = torch.cat(parts_features, dim=1)
+
+    normalize_mask = output_features.new_full((total_refs,), beta)
+    normalize_mask[total_refs - nb_labels:] = 1
+
     log_softmax = log_softmax_temp(matrix=final_features,
                                    temp=temp,
                                    mask=mask_diagonal * normalize_mask.unsqueeze(0))
-    # Return the negative log softmax, ponderate
     return - (log_softmax * w).sum(dim=1)
 
 
@@ -97,7 +149,11 @@ def constrative(output_features: Tensor,
                 prototype_features: Tensor,
                 alpha: float,
                 beta: float,
-                temp:float) -> Tensor:
+                temp: float,
+                key_features: Tensor = None,
+                key_labels: Tensor = None,
+                queue_features: Tensor = None,
+                queue_labels: Tensor = None) -> Tensor:
     """_summary_
 
     :param features_labels: Features of the CLS representation shape BxF
@@ -121,7 +177,11 @@ def constrative(output_features: Tensor,
                                                 prototype_features=prototype_features,
                                                 alpha=alpha,
                                                 beta=beta,
-                                                temp=temp)/labels_query.sum(dim=1)
+                                                temp=temp,
+                                                key_features=key_features,
+                                                key_labels=key_labels,
+                                                queue_features=queue_features,
+                                                queue_labels=queue_labels)/(labels_query.sum(dim=1) + EPS)
     return loss_contrastive.mean()
 
 
@@ -148,14 +208,33 @@ class LossContrastiveMSC(nn.Module):
     def forward(self,
                 output_query: Tensor,
                 labels_query: Tensor,
-                prototype: Tensor):
+                prototype: Tensor,
+                queue_feats: Tensor=None,
+                queue_labels: Tensor=None,
+                key_feats: Tensor=None,
+                key_labels: Tensor=None):
         # Apply projection on label features
         normalize_features_query = F.normalize(output_query, dim=-1, p=2)
         normalize_prototype = F.normalize(prototype, dim=-1, p=2)
+        key_features = None
+        key_labels_tensor = None
+        if key_feats is not None and key_labels is not None and key_feats.numel() > 0:
+            key_features = F.normalize(key_feats.detach().to(normalize_features_query.dtype), dim=-1, p=2)
+            key_labels_tensor = key_labels.detach().to(labels_query.dtype)
+
+        queue_features = None
+        queue_labels_tensor = None
+        if queue_feats is not None and queue_labels is not None and queue_feats.numel() > 0:
+            queue_features = F.normalize(queue_feats.detach().to(normalize_features_query.dtype), dim=-1, p=2)
+            queue_labels_tensor = queue_labels.detach().to(labels_query.dtype)
         # Apply Contrastive function
         return constrative(output_features=normalize_features_query,
                            labels_query=labels_query,
                            prototype_features=normalize_prototype,
                            alpha=self.alpha,
                            beta=self.beta,
-                           temp=self.temp)
+                           temp=self.temp,
+                           key_features=key_features,
+                           key_labels=key_labels_tensor,
+                           queue_features=queue_features,
+                           queue_labels=queue_labels_tensor)
