@@ -13,7 +13,7 @@ from model.baseline_ours_bce import Baseline as Baseline_2
 from model.baseline_ours import Baseline
 from model.linear_layer import LinearEvaluation
 from model.linear_layer_multiple import LinearEvaluationMultiple
-from torch.cuda.amp import GradScaler
+from torch.amp import GradScaler
 from torch import autocast
 from data.read_dataset import read_dataset
 from data.vision_datasets import get_vision_loaders
@@ -102,6 +102,8 @@ def trainer(config: Dict, entity_name: str):
                                                                                   dataset_name=config["dataset_name"],
                                                                                   batch_size_val_test=BATCH_EVAL_TEST,
                                                                                   training_mode=True)
+        train_data, _, _ = read_dataset(name=config['dataset_name'])
+        config['nb_labels'] = train_data.shape[1] - 1
         if config["loss"] == "bce":
             print("=== BCE Training === ")
             train_BCE(config, dataloader_train, dataloader_val,
@@ -116,8 +118,7 @@ def trainer(config: Dict, entity_name: str):
             train_BCE(config, dataloader_train, dataloader_val,
                       dataloader_test, entity_name, num_labels=config['nb_labels'], loss='focal',bce_loss='focal')
             return 0
-        train_data, _, _ = read_dataset(name=config['dataset_name'])
-        config['nb_labels'] = train_data.shape[1] - 1
+        
 
         print("=== download data donnneeee! ====")
         # Create Model
@@ -539,7 +540,7 @@ def train_BCE(config: Dict, dataloader_train: DataLoader, dataloader_val: DataLo
     bce_model = Baseline_2(backbone_path=config['name_model'],
                           nb_labels=config['nb_labels'],
                           projection_dim=config["projection_dim"],
-                          task_type="VISION",
+                          task_type="NLP",
                           weights=config["weights"]).to(DEVICE)
     
     
@@ -562,9 +563,9 @@ def train_BCE(config: Dict, dataloader_train: DataLoader, dataloader_val: DataLo
         for batch in tqdm(dataloader_train, desc="Training Batches"):
             optimizer.zero_grad(set_to_none=True)
             with autocast(device_type='cuda', dtype=torch.float16):
-                inputs, labels = batch['input_ids'].to(
-                    DEVICE), batch['labels'].to(DEVICE)
-                outputs = bce_model(inputs)
+                inputs, attention_mask, labels = batch['input_ids'].to(
+                    DEVICE), batch['attention_mask'].to(DEVICE), batch['labels'].to(DEVICE)
+                outputs = bce_model(inputs, attention_mask=attention_mask)
                 loss = loss_function(outputs, labels)
 
             scaler.scale(loss).backward()
@@ -588,9 +589,9 @@ def train_BCE(config: Dict, dataloader_train: DataLoader, dataloader_val: DataLo
 
         with torch.no_grad():
             for batch in dataloader_val:
-                inputs, labels = batch['input_ids'].to(
-                    DEVICE), batch['labels'].to(DEVICE)
-                outputs = bce_model(inputs)
+                inputs, attention_mask, labels = batch['input_ids'].to(
+                    DEVICE), batch['attention_mask'].to(DEVICE), batch['labels'].to(DEVICE)
+                outputs = bce_model(inputs, attention_mask=attention_mask)
                 loss = loss_function(outputs, labels)
                 val_loss += loss.item()
                 all_val_preds.append(torch.sigmoid(outputs).cpu())
@@ -613,9 +614,9 @@ def train_BCE(config: Dict, dataloader_train: DataLoader, dataloader_val: DataLo
         all_test_labels = []
         with torch.no_grad():
             for batch in dataloader_test:
-                inputs, labels = batch['input_ids'].to(
-                    DEVICE), batch['labels'].to(DEVICE)
-                outputs = bce_model(inputs)
+                inputs, attention_mask, labels = batch['input_ids'].to(
+                    DEVICE), batch['attention_mask'].to(DEVICE), batch['labels'].to(DEVICE)
+                outputs = bce_model(inputs, attention_mask=attention_mask)
                 all_test_preds.append(torch.sigmoid(outputs).cpu())
                 all_test_labels.append(labels.cpu())
                 test_loss += loss_function(outputs, labels).item()
