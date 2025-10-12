@@ -38,8 +38,8 @@ DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 WARMUP = 0.05
 MOMENTUM = 0.999
 
-ALL_LR = [1, 1e-1] 
-ALL_WD = [1, 1e-1, 1e-2, 1e-4]
+ALL_LR = [1e-1, 1e-2] 
+ALL_WD = [1e-1, 1e-2, 1e-4]
 
 # Vision datasets
 VISION_DATASETS = ['voc2007', 'coco2014','coco2','flickr25k','nuswide']
@@ -102,6 +102,20 @@ def trainer(config: Dict, entity_name: str):
                                                                                   dataset_name=config["dataset_name"],
                                                                                   batch_size_val_test=BATCH_EVAL_TEST,
                                                                                   training_mode=True)
+        if config["loss"] == "bce":
+            print("=== BCE Training === ")
+            train_BCE(config, dataloader_train, dataloader_val,
+                      dataloader_test, entity_name, num_labels=config['nb_labels'], loss='bce',bce_loss='bce')
+            print("=== ZLPR Training === ")
+            train_BCE(config, dataloader_train, dataloader_val,
+                      dataloader_test, entity_name, num_labels=config['nb_labels'], loss='ZLPR',bce_loss='ZLPR')
+            print("=== Asymetric Training === ")
+            train_BCE(config, dataloader_train, dataloader_val,
+                      dataloader_test, entity_name, num_labels=config['nb_labels'], loss='asymetric',bce_loss='asymetric')
+            print("=== Focal Training === ")
+            train_BCE(config, dataloader_train, dataloader_val,
+                      dataloader_test, entity_name, num_labels=config['nb_labels'], loss='focal',bce_loss='focal')
+            return 0
         train_data, _, _ = read_dataset(name=config['dataset_name'])
         config['nb_labels'] = train_data.shape[1] - 1
 
@@ -133,6 +147,9 @@ def trainer(config: Dict, entity_name: str):
             print("=== Asymetric Training === ")
             train_BCE(config, dataloader_train, dataloader_val,
                       dataloader_test, entity_name, num_labels=config['nb_labels'], loss='asymetric',bce_loss='asymetric')
+            print("=== Focal Training === ")
+            train_BCE(config, dataloader_train, dataloader_val,
+                      dataloader_test, entity_name, num_labels=config['nb_labels'], loss='focal',bce_loss='focal')
             return 0
 
         model = Baseline(backbone_path=config['name_model'],
@@ -514,7 +531,7 @@ def train_BCE(config: Dict, dataloader_train: DataLoader, dataloader_val: DataLo
                entity=entity_name,
                config=config)
     
-    dic_loss = {"bce": nn.BCEWithLogitsLoss(), "ZLPR": Zlpr(), "asymetric": AsymmetricLoss()}	
+    dic_loss = {"bce": nn.BCEWithLogitsLoss(), "ZLPR": Zlpr(), "asymetric": AsymmetricLoss(gamma_neg=3, gamma_pos=0, clip=0.3), "focal": AsymmetricLoss(gamma_neg=2, gamma_pos=0)}	
     # replace the string 'bce' in  config["merge_groupe"] by the loss function used
     
     loss_function = dic_loss[loss]
