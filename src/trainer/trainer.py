@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from transformers import AutoTokenizer
 from torch.optim import AdamW
 from utils.utils import set_seed, get_all_preds, save_best_model, save_test_score, compute_test_metrics, save_best_model_train, save_best_model_final, compute_test_metrics_individual
+from utils.ablation import evaluate_embedding
 from trainer.utils_trainer_vision import set_optimizer
 from copy import deepcopy
 from data import dataloader
@@ -371,18 +372,37 @@ def trainer(config: Dict, entity_name: str):
         step=step, name='val', model=model, dataloader_train=dataloader_train, dataloader_val=dataloader_val, config=config)
     # Reload best backbone
     print("Create Dataloader === ")
-    datalaoder_test_hidden = create_dataloader_hidden_space_test(model=model,
+    dataloader_test_hidden = create_dataloader_hidden_space_test(model=model,
                                                                  dataloader_test=dataloader_test,
                                                                  batch_size=BATCH_EVAL_TEST,
                                                                  hidden=True)
     print("Saving preds === ")
     pred_test, target_test = get_all_preds(model=projection_final,
-                                           dataloader=datalaoder_test_hidden,
+                                           dataloader=dataloader_test_hidden,
                                            device=DEVICE)
     print("Compute Metrics === ")
     config_res = compute_test_metrics(target_test.numpy(
     ), pred_test.numpy(), add_str='test', nb_class=config['nb_labels'])
     wandb.log(config_res, step=step)
+
+    # ablation study : evaluate embeddings
+
+    print("Collect hidden features for Representation Analysis === ")
+    X_list, Y_list = [], []
+    model.eval()
+    with torch.no_grad():
+        for hidden_batch, y_batch in dataloader_test_hidden:
+            X_list.append(hidden_batch.cpu())
+            Y_list.append(y_batch.cpu())
+    X_test = torch.cat(X_list, dim=0).numpy()   # (N, D)
+    Y_test = torch.cat(Y_list, dim=0).numpy()   # (N, L) multi-hot
+
+    sil, dbi = evaluate_embedding(
+        X_test, Y_test,
+        keep_fraction=config["fraction"]  # 頻出ラベル組合せの上位50%
+    )
+    wandb.log({"silhouette_test": sil, "dbi_test": dbi}, step=step)
+
     wandb.finish()
     save_test_score(config, config_res)
 
@@ -565,7 +585,7 @@ def train_BCE(config: Dict, dataloader_train: DataLoader, dataloader_val: DataLo
             with autocast(device_type='cuda', dtype=torch.float16):
                 inputs, attention_mask, labels = batch['input_ids'].to(
                     DEVICE), batch['attention_mask'].to(DEVICE), batch['labels'].to(DEVICE)
-                outputs = bce_model(inputs, attention_mask=attention_mask)
+                outputs, _ = bce_model(inputs, attention_mask=attention_mask)
                 loss = loss_function(outputs, labels)
 
             scaler.scale(loss).backward()
@@ -591,7 +611,7 @@ def train_BCE(config: Dict, dataloader_train: DataLoader, dataloader_val: DataLo
             for batch in dataloader_val:
                 inputs, attention_mask, labels = batch['input_ids'].to(
                     DEVICE), batch['attention_mask'].to(DEVICE), batch['labels'].to(DEVICE)
-                outputs = bce_model(inputs, attention_mask=attention_mask)
+                outputs, _ = bce_model(inputs, attention_mask=attention_mask)
                 loss = loss_function(outputs, labels)
                 val_loss += loss.item()
                 all_val_preds.append(torch.sigmoid(outputs).cpu())
@@ -612,14 +632,17 @@ def train_BCE(config: Dict, dataloader_train: DataLoader, dataloader_val: DataLo
         test_loss = 0.0
         all_test_preds = []
         all_test_labels = []
+        X_list, Y_list = [], [] 
         with torch.no_grad():
             for batch in dataloader_test:
                 inputs, attention_mask, labels = batch['input_ids'].to(
                     DEVICE), batch['attention_mask'].to(DEVICE), batch['labels'].to(DEVICE)
-                outputs = bce_model(inputs, attention_mask=attention_mask)
+                outputs, rep = bce_model(inputs, attention_mask=attention_mask)
                 all_test_preds.append(torch.sigmoid(outputs).cpu())
                 all_test_labels.append(labels.cpu())
                 test_loss += loss_function(outputs, labels).item()
+                X_list.append(rep.cpu())
+                Y_list.append(labels.cpu())
 
         all_test_preds = torch.cat(all_test_preds).numpy()
         all_test_labels = torch.cat(all_test_labels).numpy()
@@ -628,10 +651,20 @@ def train_BCE(config: Dict, dataloader_train: DataLoader, dataloader_val: DataLo
         wandb.log({"bce_loss_test": test_loss / len(dataloader_test),
                    **metric_dic_test
                    }, step=epoch)
+        print("Collect hidden features for Representation Analysis === ")
+        X_test = torch.cat(X_list, dim=0).numpy()   # (N, D)
+        Y_test = torch.cat(Y_list, dim=0).numpy()   # (N, L) multi-hot
         # compute and log the best test metrics based on the best validation f1 micro :
+        sil, dbi = evaluate_embedding(
+            X_test, Y_test,
+            keep_fraction=config["fraction"]  # 頻出ラベル組合せの上位50%
+        )
+       
         if metric_dic_val["f1 micro val"] > best_f1_micro_val:
             best_metric_dic = compute_test_metrics(
                 all_test_labels, all_test_preds, add_str='test(best)', nb_class=num_labels)
+            best_metric_dic["silhouette"] = sil
+            best_metric_dic["dbi"] = dbi
 
     # log the dict of the best test metrics based on the best validation f1 micro as summary metrics
     wandb.log(best_metric_dic)
