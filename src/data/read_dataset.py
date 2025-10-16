@@ -56,11 +56,11 @@ def read_dataset(name: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         path_dev = os.path.join(current_path, "data/rcv1/dev.csv")
         path_test = os.path.join(current_path, "data/rcv1/test.csv")
         train = pd.read_csv(path_train)
-        train.iloc[:, 0] = train.iloc[:, 0].apply(lambda x: clean_text(x))
+        train['abstract'] = train['abstract'].apply(lambda x: clean_text(x))
         dev = pd.read_csv(path_dev)
-        dev.iloc[:, 0] = dev.iloc[:, 0].apply(lambda x: clean_text(x))
+        dev['abstract'] = dev['abstract'].apply(lambda x: clean_text(x))
         test = pd.read_csv(path_test)
-        test.iloc[:, 0] = test.iloc[:, 0].apply(lambda x: clean_text(x))
+        test['abstract'] = test['abstract'].apply(lambda x: clean_text(x))
         # Construct correct train, dev split
         return train, dev, test
     elif name == 'uklex':

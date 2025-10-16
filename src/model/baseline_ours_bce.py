@@ -82,7 +82,7 @@ class Baseline(nn.Module):
             text_embeddings = self.backbone(input_ids=input_ids, attention_mask=attention_mask)[0]
             # Keep only the token CLS as global Representation
             final_representation = text_embeddings[:, 0, :]
-            return self.linear_bce(self.dropout(final_representation))
+            return self.linear_bce(self.dropout(final_representation)), final_representation
         elif self.task_type == 'VISION':
             #No need for attention mask, still return the projection and the final representation
             image_embeddings = self.backbone(input_ids)

@@ -111,7 +111,7 @@ class LossContrastiveBase(nn.Module):
     def __init__(self,
                  alpha: float,
                  beta: float,
-                 temp: float=0.07) -> None:
+                 temp: float) -> None:
         """Classical init of nn.Module
 
         :param config: configuration file

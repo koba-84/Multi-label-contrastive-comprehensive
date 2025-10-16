@@ -164,7 +164,7 @@ cython_debug/
 __pycache__/
 
 src/save/*
-data/*
+src/data/data/*
 src/wandb/
 test.ipynb
 src/nohup.out

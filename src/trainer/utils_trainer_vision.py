@@ -16,7 +16,7 @@ def set_optimizer(config: Dict[str, Any], model: torch.nn.Module) -> None:
 
     if config.get("optim") is None or config.get("optim") == "AdamW":
         training_parameters_dict = model.parameters_training(lr_backbone=config['lr'],
-                                                             lr_projection=config['lr'],
+                                                             lr_projection=config['lr_adding'],
                                                              wd=config['wd'])
 
         #print_parameters(training_parameters_dict)
