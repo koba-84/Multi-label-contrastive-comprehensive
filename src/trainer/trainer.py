@@ -26,7 +26,9 @@ from .loss.loss_contrastive_mscrg import LossContrastiveMSCRG
 from .loss.loss_contrastive_mscwrg import LossContrastiveMSCWRG
 from .loss.loss_contrastive_mulsupcon import LossContrastiveMulSupCon
 from .loss.zlpr import Zlpr, AsymmetricLoss
-from .basic_utils import compute_val_loss, create_dataloader_hidden_space, traine_linear_classifier, create_dataloader_hidden_space_test
+from .basic_utils import (compute_val_loss, create_dataloader_hidden_space,
+                          traine_linear_classifier, traine_linear_classifier_end_to_end,
+                          create_dataloader_hidden_space_test)
 import transformers
 from itertools import product
 from torch.utils.data import DataLoader
@@ -54,6 +56,9 @@ def trainer(config: Dict, entity_name: str):
     :param entity_name: Name entity for wandb
     :type entity_name: str
     """
+    if "freeze_encoder" not in config:
+        raise ValueError("freeze_encoder must be specified as true/false in config")
+
     TASK_TYPE = "NLP" if config.get(
         "dataset_name") not in VISION_DATASETS else "VISION"
     config["task_type"] = TASK_TYPE
@@ -185,7 +190,7 @@ def trainer(config: Dict, entity_name: str):
 
     # Create optimizer for the query model
  
-    optim = set_optimizer(config, model)
+    optim = set_optimizer(config, model, freeze_encoder=config["freeze_encoder"])
 
     # Create scheduler with warm-up and cosin decay
     lr_scheduler = transformers.get_cosine_schedule_with_warmup(optimizer=optim,
@@ -234,7 +239,7 @@ def trainer(config: Dict, entity_name: str):
                group=config["merge_groupe"],
                entity=entity_name,
                config=config)
-
+    
     # Set name of the run in Wandb
     wandb.run.name = config["name_run"]
 
@@ -368,7 +373,12 @@ def trainer(config: Dict, entity_name: str):
     print("=== The Training === ")
     
     print("Eval Model === ")
-    _, projection_final = eval_model(
+    if config["freeze_encoder"]:
+        eval_fn = eval_model_linear_probe
+    else:
+        eval_fn = eval_model_finetune
+
+    _, projection_final = eval_fn(
         step=step, name='val', model=model, dataloader_train=dataloader_train, dataloader_val=dataloader_val, config=config)
     # Reload best backbone
     print("Create Dataloader === ")
@@ -407,7 +417,7 @@ def trainer(config: Dict, entity_name: str):
     save_test_score(config, config_res)
 
 
-def eval_model(step: int, name: str, model: nn.Module, dataloader_train, dataloader_val, config, nb_linear=3):
+def eval_model_linear_probe(step: int, name: str, model: nn.Module, dataloader_train, dataloader_val, config, nb_linear=3):
     """ Eval Model
 
     :param step: Step for Wandb
@@ -489,6 +499,34 @@ def eval_model(step: int, name: str, model: nn.Module, dataloader_train, dataloa
     return config_res["f1 micro " + name], final_projection_model
 
 
+def eval_model_finetune(step: int, name: str, model: nn.Module, dataloader_train, dataloader_val, config):
+    linear_classifier = LinearEvaluation(
+        nb_labels=config['nb_labels'], hidden_size=model.hidden_size).to(DEVICE)
+    parameter_groups = model.parameters_training(lr_backbone=config["lr"],
+                                                 lr_projection=config["lr_adding"],
+                                                 wd=config["wd"])
+    parameter_groups += linear_classifier.parameters_training(lr=config["lr_adding"],
+                                                              wd=config["wd"])
+    optimizer = AdamW(params=parameter_groups)
+    traine_linear_classifier_end_to_end(linear_classifier=linear_classifier,
+                                        model=model,
+                                        dataloader=dataloader_train,
+                                        optim=optimizer)
+    _, dataloader_val_h = create_dataloader_hidden_space(model=model,
+                                                         dataloader_train=dataloader_train,
+                                                         dataloader_val=dataloader_val,
+                                                         batch_size=BATCH_EVAL_TEST,
+                                                         hidden=True)
+    pred_val, target_val = get_all_preds(model=linear_classifier,
+                                         dataloader=dataloader_val_h,
+                                         device=DEVICE)
+    config_res = compute_test_metrics(target_val.numpy(), pred_val.numpy(),
+                                      add_str=name, nb_class=config['nb_labels'])
+    wandb.log(config_res, step=step)
+    print(config_res)
+    return config_res["f1 micro " + name], linear_classifier
+
+
 def set_multi_linear(multi_linear: nn.Module, single_lin: nn.Module, index: int):
     """ Save single linear inside the multi linear layer
 
@@ -562,10 +600,14 @@ def train_BCE(config: Dict, dataloader_train: DataLoader, dataloader_val: DataLo
                           projection_dim=config["projection_dim"],
                           task_type="NLP",
                           weights=config["weights"]).to(DEVICE)
-    
-    
 
-    optimizer = set_optimizer(config, bce_model)
+    freeze_flag = config["freeze_encoder"]
+    if freeze_flag:
+        for param in bce_model.backbone.parameters():
+            param.requires_grad = False
+        bce_model.backbone.eval()
+
+    optimizer = set_optimizer(config, bce_model, freeze_encoder=config["freeze_encoder"])
 
     lr_scheduler = transformers.get_cosine_schedule_with_warmup(optimizer=optimizer,
                                                                 num_warmup_steps=int(
@@ -622,7 +664,8 @@ def train_BCE(config: Dict, dataloader_train: DataLoader, dataloader_val: DataLo
 
         metric_dic_val = compute_test_metrics(
             all_val_labels, all_val_preds, add_str='val', nb_class=num_labels)
-        wandb.log({"bce_loss_train": avg_train_loss,
+        wandb.log({"encoder_frozen": freeze_flag,
+                   "bce_loss_train": avg_train_loss,
                    "bce_loss_val": val_loss / len(dataloader_val),
                    "learning_rate": lr_scheduler.get_last_lr()[0],
                    **metric_dic_val

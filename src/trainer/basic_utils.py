@@ -247,6 +247,34 @@ def traine_linear_classifier(linear_classifier: nn.Module,
     for step in range(40):
         # Iterate of all element inside the batch
         loss_save = 0
+
+
+def traine_linear_classifier_end_to_end(linear_classifier: nn.Module,
+                                        model: nn.Module,
+                                        dataloader: DataLoader,
+                                        optim) -> None:
+    """Fine-tune backbone + linear head jointly on original dataloader."""
+    lr_scheduler = get_scheduler("linear",
+                                 optimizer=optim,
+                                 num_warmup_steps=0,
+                                 num_training_steps=len(dataloader) * 40)
+    model.train()
+    linear_classifier.train()
+    for _ in range(40):
+        for batch in dataloader:
+            optim.zero_grad(set_to_none=True)
+            if model.task_type == 'NLP':
+                _, hidden_outputs = model(input_ids=batch['input_ids'].to(DEVICE),
+                                          attention_mask=batch['attention_mask'].to(DEVICE))
+            else:
+                _, hidden_outputs = model(batch['input_ids'].to(DEVICE))
+            loss = linear_classifier(x=hidden_outputs, y=batch['labels'].to(DEVICE))
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0, norm_type=2)
+            optim.step()
+            lr_scheduler.step()
+    model.eval()
+    linear_classifier.eval()
         for _, batch in enumerate(dataloader):
             # Set Optim to zeros grad
             optim.zero_grad(set_to_none=True)

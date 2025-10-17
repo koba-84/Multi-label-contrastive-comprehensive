@@ -16,5 +16,6 @@
     "loss" : ["msc"],
     "task_type": "NLP",
     "queue_size": [512],
-    "fraction": [0.5]
+    "fraction": [0.5],
+    "freeze_encoder": [true]
 }
