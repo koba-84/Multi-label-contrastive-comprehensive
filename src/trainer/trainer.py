@@ -512,6 +512,7 @@ def eval_model_finetune(step: int, name: str, model: nn.Module, dataloader_train
     traine_linear_classifier_end_to_end(linear_classifier=linear_classifier,
                                         model=model,
                                         dataloader=dataloader_train,
+                                        dataloader_val=dataloader_val,
                                         optim=optimizer)
     _, dataloader_val_h = create_dataloader_hidden_space(model=model,
                                                          dataloader_train=dataloader_train,

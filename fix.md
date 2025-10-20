@@ -1,29 +1,21 @@
-# freeze_encoder=True 時の Optimizer エラーと対処
 
-## 現象
-- コマンド例：`python3 src/main.py --config ...`
-- `freeze_encoder=true` で学習を始めると、`torch.optim.optimizer.add_param_group` から `ValueError: can't optimize a non-leaf Tensor` が発生する。
+# trainer.py修正要件定義（traine_linear_classifier_end_to_endのdataloader_val対応）
 
-## 原因
-- `src/model/baseline_ours.py` および `src/model/baseline_ours_bce.py` の `parameters_training` で、プロトタイプ行列を `'params': self.prototype` のように単体で登録している。
-- `nn.Parameter` は iterable として扱われるため、`_filter_parameter_groups` 内の `list(group.get("params", []))` でテンサの 0 次元ごとの値へ展開され、leaf ではない `Tensor` が出来てしまう。
-- `freeze_encoder=true` のときは backbone 関連のパラメータが除外されるので、この non-leaf Tensor だけが optimizer に渡り、`ValueError: can't optimize a non-leaf Tensor` が発生する。
+## 目的
+- basic_utils.pyのtraine_linear_classifier_end_to_endがdataloader_val引数を新たに受け取るようになったため、trainer.py側の呼び出しもそれに合わせて修正する。
 
-## 修正方針
-1. プロトタイプをリストで包んで optimizer へ渡すよう変更する。
-   - `src/model/baseline_ours.py` と `src/model/baseline_ours_bce.py` の `parameters_training` の該当行を `'params': [self.prototype]` とする。
-2. `_filter_parameter_groups` では `group["params"] = params` を行い、空リストや `requires_grad=False` の要素は除外する（既に実装済み）。
+## 要件
+1. **eval_model_finetune内の呼び出し修正**
+    - traine_linear_classifier_end_to_endの呼び出し時、dataloader_valを新たに引数として渡す。
+    - それ以外の引数・返り値・処理は変更しない。
 
-## 実装例
-```python
-# src/model/baseline_ours.py
-{'params': [self.prototype],
- 'lr': lr_projection,
- 'weight_decay': wd}
+2. **dataloader_valの選択**
+    - 既存のバリデーション用dataloader（hidden特徴空間でなく、通常のもの）をそのまま渡す。
+    - dataloader_val_h（hidden特徴空間用）はwandbログや評価用で使うが、traine_linear_classifier_end_to_endには渡さない。
 
-# src/model/baseline_ours_bce.py でも同様に修正
-```
+3. **他の箇所は一切変更しない**
+    - traine_linear_classifier_end_to_end以外の呼び出しや、他の関数・ロジックは修正しない。
 
-## 確認手順
-- 上記修正後に `freeze_encoder=true` で再度実行し、Optimizer の初期化が通るか確認する。
-- GradScaler の AssertionError も併発しないことを合わせてチェックする。
+## 備考
+- 既存のAPI互換性を保つため、必要最小限の修正に留める。
+- 返り値やwandbログの扱いは現状維持。

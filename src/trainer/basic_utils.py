@@ -262,19 +262,27 @@ def traine_linear_classifier(linear_classifier: nn.Module,
         loss_save = 0
 
 
+import wandb
+import numpy as np
+from copy import deepcopy
+from utils.utils import compute_test_metrics
+
 def traine_linear_classifier_end_to_end(linear_classifier: nn.Module,
                                         model: nn.Module,
                                         dataloader: DataLoader,
+                                        dataloader_val: DataLoader,
                                         optim) -> None:
-    """Fine-tune backbone + linear head jointly on original dataloader."""
+    """Fine-tune backbone + linear head jointly on original dataloader. バリデーションで最良モデルを保存・復元（fix.md準拠）"""
     lr_scheduler = get_scheduler("linear",
                                  optimizer=optim,
                                  num_warmup_steps=0,
                                  num_training_steps=len(dataloader) * 40)
-    model.train()
-    linear_classifier.train()
-    for _ in range(40):
-        loss_save = 0
+    best_score = float('-inf')
+    best_state_linear = None
+    best_state_model = None
+    for epoch in range(40):
+        model.train()
+        linear_classifier.train()
         for batch in dataloader:
             optim.zero_grad(set_to_none=True)
             if model.task_type == 'NLP':
@@ -287,6 +295,38 @@ def traine_linear_classifier_end_to_end(linear_classifier: nn.Module,
             nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0, norm_type=2)
             optim.step()
             lr_scheduler.step()
-            loss_save += loss.item()
-        loss_save = 0
+        # --- validation ---
+        model.eval()
+        linear_classifier.eval()
+        preds_list = []
+        labels_list = []
+        with torch.no_grad():
+            for batch in dataloader_val:
+                if model.task_type == 'NLP':
+                    _, hidden_outputs = model(input_ids=batch['input_ids'].to(DEVICE),
+                                              attention_mask=batch['attention_mask'].to(DEVICE))
+                else:
+                    _, hidden_outputs = model(batch['input_ids'].to(DEVICE))
+                preds = linear_classifier(x=hidden_outputs)
+                preds_list.append(preds.cpu())
+                labels_list.append(batch['labels'].cpu())
+        y_pred = torch.cat(preds_list, dim=0).numpy()
+        y_true = torch.cat(labels_list, dim=0).numpy()
+        metrics = compute_test_metrics(y_true, y_pred, add_str="finetune", nb_class=y_true.shape[1])
+        wandb.log({
+            "finetune/val_f1_micro": metrics["f1 micro finetune"],
+            "finetune/val_f1_macro": metrics["f1 macro finetune"],
+            "finetune/val_hamming_loss": metrics["hamming_loss finetune"],
+            "finetune/epoch": epoch
+        })
+        if metrics["f1 micro finetune"] > best_score:
+            best_score = metrics["f1 micro finetune"]
+            best_state_linear = deepcopy(linear_classifier.state_dict())
+            best_state_model = deepcopy(model.state_dict())
+        model.train()
+        linear_classifier.train()
+    # --- restore best ---
+    if best_state_linear is not None and best_state_model is not None:
+        linear_classifier.load_state_dict(best_state_linear)
+        model.load_state_dict(best_state_model)
     
