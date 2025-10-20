@@ -22,8 +22,8 @@ class DataSetCustom(Dataset):
         # Return text, label vector, and nan_mask flag
         row = self.dataframe.iloc[indice]
         text = row.iloc[0]
-        labels = row.iloc[1:].drop("nan_mask")
-        nan_mask = int(row["nan_mask"])
+        labels = row.iloc[1:-1]
+        nan_mask = row.iloc[-1]
         return text, labels.to_numpy(), nan_mask
 
     def __len__(self):
