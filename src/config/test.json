@@ -1,14 +1,14 @@
 {
-    "dataset_name": ["aapd"],
-    "SEED": [1,2],
+    "dataset_name": ["aapd-10"],
+    "SEED": [1],
     "lr": [2e-5],
     "lr_adding": [5e-5],
     "name_model": "roberta-base",
-    "max_len": 300,
+    "max_len": 10,
     "wd": 0.01,
     "dropout": 0.1,
-    "epochs": [80],
-    "batch_size": [32],
+    "epochs": [1],
+    "batch_size": [256],
     "temp": [0.1],
     "projection_dim": 256,
     "beta": [0.1],
@@ -17,5 +17,5 @@
     "task_type": "NLP",
     "queue_size": [512],
     "fraction": [0.5],
-    "freeze_encoder": [false]
+    "freeze_encoder": [true]
 }

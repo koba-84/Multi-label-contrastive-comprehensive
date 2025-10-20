@@ -1,7 +1,7 @@
 {
     "dataset_name": ["aapd"],
-    "SEED": [1,2],
-    "lr": [2e-5],
+    "SEED": [0],
+    "lr": [2e-5, 5e-5],
     "lr_adding": [5e-5],
     "name_model": "roberta-base",
     "max_len": 300,
@@ -13,7 +13,7 @@
     "projection_dim": 256,
     "beta": [0.1],
     "alpha": [0],
-    "loss" : ["base"],
+    "loss" : ["msc"],
     "task_type": "NLP",
     "queue_size": [512],
     "fraction": [0.5],

@@ -287,18 +287,6 @@ def traine_linear_classifier_end_to_end(linear_classifier: nn.Module,
             nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0, norm_type=2)
             optim.step()
             lr_scheduler.step()
-    model.eval()
-    linear_classifier.eval()
-        for _, batch in enumerate(dataloader):
-            # Set Optim to zeros grad
-            optim.zero_grad(set_to_none=True)
-            # Compute loss function
-            loss = linear_classifier(x=batch[0].to(DEVICE), y=batch[1].to(DEVICE))
-            loss_save += loss.item()     
-            # Backward
-            loss.backward()
-            # Step of optimizer
-            optim.step()
-            # scheduler step
-            lr_scheduler.step()
+            loss_save += loss.item()
         loss_save = 0
+    

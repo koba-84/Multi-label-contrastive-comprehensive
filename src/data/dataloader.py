@@ -19,8 +19,12 @@ class DataSetCustom(Dataset):
         self.dataframe = dataframe
 
     def __getitem__(self, indice):
-        # Return text in first time, and labels after that
-        return self.dataframe.iloc[indice].values[0], self.dataframe.iloc[indice].values[1:]
+        # Return text, label vector, and nan_mask flag
+        row = self.dataframe.iloc[indice]
+        text = row.iloc[0]
+        labels = row.iloc[1:].drop("nan_mask")
+        nan_mask = int(row["nan_mask"])
+        return text, labels.to_numpy(), nan_mask
 
     def __len__(self):
         # Return the length of the dataframe
@@ -42,11 +46,13 @@ class MyCollateFunction():
     def __call__(self, batch):
         texts = []
         labels = []
+        nan_masks = []
         for exemple in batch:
             # Save all text
             texts.append(exemple[0])
             # Save all labels
             labels.append(torch.tensor(exemple[1].astype(int)))
+            nan_masks.append(int(exemple[2]))
         inputs = self.tokenizer(texts,
                                 truncation=True,
                                 padding=True,
@@ -54,7 +60,8 @@ class MyCollateFunction():
         # Return dict which contains input, paddind, and labels
         return {'input_ids': torch.tensor(inputs['input_ids'], dtype=int).long(),
                 'attention_mask': torch.tensor(inputs['attention_mask']).long(),
-                'labels': torch.stack(labels).float()}
+                'labels': torch.stack(labels).float(),
+                'nan_mask': torch.tensor(nan_masks).long()}
 
 
 def dataloader(batch_size: int,

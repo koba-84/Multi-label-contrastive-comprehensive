@@ -681,8 +681,13 @@ def train_BCE(config: Dict, dataloader_train: DataLoader, dataloader_val: DataLo
             for batch in dataloader_test:
                 inputs, attention_mask, labels = batch['input_ids'].to(
                     DEVICE), batch['attention_mask'].to(DEVICE), batch['labels'].to(DEVICE)
+                nan_mask = batch['nan_mask'].to(DEVICE)
                 outputs, rep = bce_model(inputs, attention_mask=attention_mask)
-                all_test_preds.append(torch.sigmoid(outputs).cpu())
+                probs = torch.sigmoid(outputs)
+                if bool(nan_mask.any().item()):
+                    mask = nan_mask.unsqueeze(-1).bool()
+                    probs = probs.masked_fill(mask, 0.0)
+                all_test_preds.append(probs.cpu())
                 all_test_labels.append(labels.cpu())
                 test_loss += loss_function(outputs, labels).item()
                 X_list.append(rep.cpu())

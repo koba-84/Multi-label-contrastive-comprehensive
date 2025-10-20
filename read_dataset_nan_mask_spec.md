@@ -8,9 +8,9 @@
 1. **ラベル数計算の見直し**
    - すでに `config['nb_labels'] = train_data.shape[1] - 2` で対応済み。追加作業は不要。
 
-2. **BCE 系評価／テスト処理の更新（`trainer.py::train_BCE`）**
-   - `nan_mask == 1` となるのはテスト split のみ（train/dev は常に 0）なので、学習中の勾配処理は従来どおりで問題なし。
-   - `train_BCE` 関数内の評価（validation loop）・テスト（test loop）で `batch['nan_mask']` を取得し、`torch.where(nan_mask.unsqueeze(-1) == 1, 0, predictions)` のように推論結果をゼロ化する。
+2. **BCE 系テスト処理の更新（`trainer.py::train_BCE`）**
+   - `nan_mask == 1` となるのはテスト split のみ（train/dev は常に 0）なので、学習・検証のロジックには手を入れない。
+   - テストループで `batch['nan_mask']` を取得し、`torch.sigmoid(outputs)` で得た予測だけを `nan_mask` が 1 のサンプルについて `0` に書き換える（正解ラベルは変更しない）。
 
 3. **線形評価フェーズ（`trainer/basic_utils.py::create_dataset` など）**
    - `create_dataset` および `traine_linear_classifier_end_to_end` で生成する hidden-space DataLoader に `nan_mask` を保持させる必要があるか確認。
@@ -20,9 +20,9 @@
    - `get_all_preds` をはじめ、タプルアクセスに依存している関数を `Dict` 形式の batch を受け付けるように改修。
    - テスト時のみ `batch['nan_mask']` を受け取り、`nan_mask==1` をゼロ化してから `torch.cat` する処理を追加する。
 
-5. **評価時のゼロ埋めロジック（`trainer.py` 内部 or 新規ヘルパー関数）**
-   - `compute_test_metrics` 呼び出し前に `apply_nan_mask(preds, mask)` のようなヘルパーを定義し、`nan_mask==1` のサンプルについて `y_pred` をゼロ化する。
-   - `train_BCE` のテストループや `eval_model_finetune` 内で共通的に呼べる形にすると再利用しやすい。
+5. **評価時のゼロ埋めロジック（`trainer.py` など）**
+   - `compute_test_metrics` 呼び出し前に、予測テンソルのみ `nan_mask` でマスクする（ラベルは保持）。
+   - 共通化したい場合は `apply_nan_mask(preds, mask)` のようなヘルパーを用意し、テスト系のループで利用する。
 
 ## 実装順序
 1. `trainer.py` の BCE パスを中心に、`batch` アクセスを dict ベースへ統一。
