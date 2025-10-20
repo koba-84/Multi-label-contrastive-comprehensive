@@ -396,23 +396,27 @@ def trainer(config: Dict, entity_name: str):
     ), pred_test.numpy(), add_str='test', nb_class=config['nb_labels'])
     wandb.log(config_res, step=step)
 
-    # ablation study : evaluate embeddings
+    # ablation study: evaluate embeddings
+    run_ablation = config.get("run_ablation", True)
 
-    print("Collect hidden features for Representation Analysis === ")
-    X_list, Y_list = [], []
-    model.eval()
-    with torch.no_grad():
-        for hidden_batch, y_batch in dataloader_test_hidden:
-            X_list.append(hidden_batch.cpu())
-            Y_list.append(y_batch.cpu())
-    X_test = torch.cat(X_list, dim=0).numpy()   # (N, D)
-    Y_test = torch.cat(Y_list, dim=0).numpy()   # (N, L) multi-hot
+    if run_ablation:
+        print("Collect hidden features for Representation Analysis === ")
+        X_list, Y_list = [], []
+        model.eval()
+        with torch.no_grad():
+            for hidden_batch, y_batch in dataloader_test_hidden:
+                X_list.append(hidden_batch.cpu())
+                Y_list.append(y_batch.cpu())
+        X_test = torch.cat(X_list, dim=0).numpy()   # (N, D)
+        Y_test = torch.cat(Y_list, dim=0).numpy()   # (N, L) multi-hot
 
-    sil, dbi = evaluate_embedding(
-        X_test, Y_test,
-        keep_fraction=config["fraction"]  # 頻出ラベル組合せの上位50%
-    )
-    wandb.log({"silhouette_test": sil, "dbi_test": dbi}, step=step)
+        sil, dbi = evaluate_embedding(
+            X_test, Y_test,
+            keep_fraction=config["fraction"]  # 頻出ラベル組合せの上位50%
+        )
+        wandb.log({"silhouette_test": sil, "dbi_test": dbi}, step=step)
+    else:
+        print("Skipping ablation study (run_ablation=False)")
 
     wandb.finish()
     save_test_score(config, config_res)
@@ -701,20 +705,28 @@ def train_BCE(config: Dict, dataloader_train: DataLoader, dataloader_val: DataLo
         wandb.log({"bce_loss_test": test_loss / len(dataloader_test),
                    **metric_dic_test
                    }, step=epoch)
-        print("Collect hidden features for Representation Analysis === ")
-        X_test = torch.cat(X_list, dim=0).numpy()   # (N, D)
-        Y_test = torch.cat(Y_list, dim=0).numpy()   # (N, L) multi-hot
+        
+        run_ablation = config.get("run_ablation", True)
+
+        if run_ablation:
+            print("Collect hidden features for Representation Analysis === ")
+            X_test = torch.cat(X_list, dim=0).numpy()   # (N, D)
+            Y_test = torch.cat(Y_list, dim=0).numpy()   # (N, L) multi-hot
+            sil, dbi = evaluate_embedding(
+                X_test, Y_test,
+                keep_fraction=config["fraction"]  # 頻出ラベル組合せの上位50%
+            )
+        else:
+            print("Skipping ablation study (run_ablation=False)")
+            sil, dbi = None, None
+
         # compute and log the best test metrics based on the best validation f1 micro :
-        sil, dbi = evaluate_embedding(
-            X_test, Y_test,
-            keep_fraction=config["fraction"]  # 頻出ラベル組合せの上位50%
-        )
-       
         if metric_dic_val["f1 micro val"] > best_f1_micro_val:
             best_metric_dic = compute_test_metrics(
                 all_test_labels, all_test_preds, add_str='test(best)', nb_class=num_labels)
-            best_metric_dic["silhouette"] = sil
-            best_metric_dic["dbi"] = dbi
+            if run_ablation and sil is not None:
+                best_metric_dic["silhouette"] = sil
+                best_metric_dic["dbi"] = dbi
 
     # log the dict of the best test metrics based on the best validation f1 micro as summary metrics
     wandb.log(best_metric_dic)
