@@ -137,10 +137,9 @@ class Baseline(nn.Module):
                       {'params': self.return_parameters_no_decay(group=self.projection),
                        'lr': lr_projection,
                        'weight_decay': 0},
-                    {'params': self.prototype,
+                      {'params': [self.prototype],
                        'lr': lr_projection,
                        'weight_decay': wd},
                       ]
         return parameters
     
-

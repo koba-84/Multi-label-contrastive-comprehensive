@@ -9,11 +9,11 @@ def _filter_parameter_groups(parameter_groups, freeze_encoder: bool):
         return parameter_groups
     filtered = []
     for group in parameter_groups:
-        params = list(group.get("params", []))
-        if not params:
+        params = list(group.get("params", []))  # consume generator once
+        group["params"] = params  # ensure optimizer sees a concrete list
+        if not params or not any(param.requires_grad for param in params):
             continue
-        if any(param.requires_grad for param in params):
-            filtered.append(group)
+        filtered.append(group)
     return filtered
 
 

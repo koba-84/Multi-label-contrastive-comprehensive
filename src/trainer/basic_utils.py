@@ -244,8 +244,21 @@ def traine_linear_classifier(linear_classifier: nn.Module,
                                 num_warmup_steps=0,
                                 num_training_steps=len(dataloader) * 40)
     # by default the number of epochs is blocked to 40
-    for step in range(40):
+    for _ in range(40):
         # Iterate of all element inside the batch
+        loss_save = 0
+        for batch in dataloader:
+            # Set Optim to zeros grad
+            optim.zero_grad(set_to_none=True)
+            # Compute loss function
+            loss = linear_classifier(x=batch[0].to(DEVICE), y=batch[1].to(DEVICE))
+            loss_save += loss.item()     
+            # Backward
+            loss.backward()
+            # Step of optimizer
+            optim.step()
+            # scheduler step
+            lr_scheduler.step()
         loss_save = 0
 
 
@@ -261,6 +274,7 @@ def traine_linear_classifier_end_to_end(linear_classifier: nn.Module,
     model.train()
     linear_classifier.train()
     for _ in range(40):
+        loss_save = 0
         for batch in dataloader:
             optim.zero_grad(set_to_none=True)
             if model.task_type == 'NLP':
