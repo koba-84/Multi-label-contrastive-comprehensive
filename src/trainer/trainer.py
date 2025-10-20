@@ -109,7 +109,8 @@ def trainer(config: Dict, entity_name: str):
                                                                                   batch_size_val_test=BATCH_EVAL_TEST,
                                                                                   training_mode=True)
         train_data, _, _ = read_dataset(name=config['dataset_name'])
-        config['nb_labels'] = train_data.shape[1] - 1
+        # textカラムとnan_maskカラムを除外した列数がラベル数
+        config['nb_labels'] = train_data.shape[1] - 2
         if config["loss"] == "bce":
             print("=== BCE Training === ")
             train_BCE(config, dataloader_train, dataloader_val,
