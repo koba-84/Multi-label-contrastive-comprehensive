@@ -171,3 +171,6 @@ src/nohup.out
 requirements_nlp.txt
 src/config_nlp/*
 
+# Prevent committing Markdown notes except the canonical README.
+*.md
+!README.md
