@@ -115,9 +115,9 @@ def trainer(config: Dict, entity_name: str):
             print("=== BCE Training === ")
             train_BCE(config, dataloader_train, dataloader_val,
                       dataloader_test, entity_name, num_labels=config['nb_labels'], loss='bce',bce_loss='bce')
-            print("=== ZLPR Training === ")
-            train_BCE(config, dataloader_train, dataloader_val,
-                      dataloader_test, entity_name, num_labels=config['nb_labels'], loss='ZLPR',bce_loss='ZLPR')
+            # print("=== ZLPR Training === ")
+            # train_BCE(config, dataloader_train, dataloader_val,
+            #           dataloader_test, entity_name, num_labels=config['nb_labels'], loss='ZLPR',bce_loss='ZLPR')
             print("=== Asymetric Training === ")
             train_BCE(config, dataloader_train, dataloader_val,
                       dataloader_test, entity_name, num_labels=config['nb_labels'], loss='asymetric',bce_loss='asymetric')
@@ -149,9 +149,9 @@ def trainer(config: Dict, entity_name: str):
             print("=== BCE Training === ")
             train_BCE(config, dataloader_train, dataloader_val,
                       dataloader_test, entity_name, num_labels=config['nb_labels'], loss='bce',bce_loss='bce')
-            print("=== ZLPR Training === ")
-            train_BCE(config, dataloader_train, dataloader_val,
-                      dataloader_test, entity_name, num_labels=config['nb_labels'], loss='ZLPR',bce_loss='ZLPR')
+            # print("=== ZLPR Training === ")
+            # train_BCE(config, dataloader_train, dataloader_val,
+            #           dataloader_test, entity_name, num_labels=config['nb_labels'], loss='ZLPR',bce_loss='ZLPR')
             print("=== Asymetric Training === ")
             train_BCE(config, dataloader_train, dataloader_val,
                       dataloader_test, entity_name, num_labels=config['nb_labels'], loss='asymetric',bce_loss='asymetric')
@@ -669,9 +669,9 @@ def train_BCE(config: Dict, dataloader_train: DataLoader, dataloader_val: DataLo
                                                                 num_training_steps=len(dataloader_train) * config["epochs"])
     scaler = GradScaler()
 
-    
-
     best_f1_micro_val = float('-inf')
+    best_model_state = None
+    best_epoch = -1
 
     for epoch in range(config["epochs"]):
         bce_model.train()
@@ -720,72 +720,68 @@ def train_BCE(config: Dict, dataloader_train: DataLoader, dataloader_val: DataLo
             all_val_labels, all_val_preds, add_str='val', nb_class=num_labels)
         wandb.log({
             "classifier/epoch": epoch,
-            "encoder_frozen": freeze_flag,
             "bce_loss_train": avg_train_loss,
             "bce_loss_val": val_loss / len(dataloader_val),
             **metric_dic_val
         })
 
-        # Do the same for test set
-        test_loss = 0.0
-        all_test_preds = []
-        all_test_labels = []
-        X_list, Y_list = [], [] 
-        with torch.no_grad():
-            for batch in dataloader_test:
-                inputs, attention_mask, labels = batch['input_ids'].to(
-                    DEVICE), batch['attention_mask'].to(DEVICE), batch['labels'].to(DEVICE)
-                nan_mask = batch['nan_mask'].to(DEVICE)
-                outputs, rep = bce_model(inputs, attention_mask=attention_mask)
-                probs = torch.sigmoid(outputs)
-                if bool(nan_mask.any().item()):
-                    mask = nan_mask.unsqueeze(-1).bool()
-                    probs = probs.masked_fill(mask, 0.0)
-                all_test_preds.append(probs.cpu())
-                all_test_labels.append(labels.cpu())
-                test_loss += loss_function(outputs, labels).item()
-                X_list.append(rep.cpu())
-                Y_list.append(labels.cpu())
-
-        all_test_preds = torch.cat(all_test_preds).numpy()
-        all_test_labels = torch.cat(all_test_labels).numpy()
-        metric_dic_test = compute_test_metrics(
-            all_test_labels, all_test_preds, add_str='test', nb_class=num_labels)
-        wandb.log({
-            "classifier/epoch": epoch,
-            "bce_loss_test": test_loss / len(dataloader_test),
-            **metric_dic_test
-        })
-        
-        run_ablation = config.get("run_ablation", True)
-
-        if run_ablation:
-            print("Collect hidden features for Representation Analysis === ")
-            X_test = torch.cat(X_list, dim=0).numpy()   # (N, D)
-            Y_test = torch.cat(Y_list, dim=0).numpy()   # (N, L) multi-hot
-            sil, dbi = evaluate_embedding(
-                X_test, Y_test,
-                keep_fraction=config["fraction"]  # 頻出ラベル組合せの上位50%
-            )
-            wandb.log({
-                "classifier/epoch": epoch,
-                "silhouette_test": sil,
-                "dbi_test": dbi
-            })
-        else:
-            print("Skipping ablation study (run_ablation=False)")
-            sil, dbi = None, None
-
-        # compute and log the best test metrics based on the best validation f1 micro :
         if metric_dic_val["f1 micro val"] > best_f1_micro_val:
-            best_metric_dic = compute_test_metrics(
-                all_test_labels, all_test_preds, add_str='test(best)', nb_class=num_labels)
-            if run_ablation and sil is not None:
-                best_metric_dic["silhouette"] = sil
-                best_metric_dic["dbi"] = dbi
+            best_f1_micro_val = metric_dic_val["f1 micro val"]
+            best_model_state = deepcopy(bce_model.state_dict())
+            best_epoch = epoch
+            print(f"New best model at epoch {epoch} with val f1 micro: {best_f1_micro_val:.4f}")
 
-    # log the dict of the best test metrics based on the best validation f1 micro as summary metrics
-    for key, value in best_metric_dic.items():
+    bce_model.load_state_dict(best_model_state)
+    print(f"Loaded best model weights from epoch {best_epoch} (val f1 micro: {best_f1_micro_val:.4f})")
+
+    bce_model.eval()
+    test_loss = 0.0
+    all_test_preds = []
+    all_test_labels = []
+    X_list, Y_list = [], []
+
+    with torch.no_grad():
+        for batch in dataloader_test:
+            inputs, attention_mask, labels = batch['input_ids'].to(
+                DEVICE), batch['attention_mask'].to(DEVICE), batch['labels'].to(DEVICE)
+            nan_mask = batch['nan_mask'].to(DEVICE)
+            outputs, rep = bce_model(inputs, attention_mask=attention_mask)
+            probs = torch.sigmoid(outputs)
+            if bool(nan_mask.any().item()):
+                mask = nan_mask.unsqueeze(-1).bool()
+                probs = probs.masked_fill(mask, 0.0)
+            all_test_preds.append(probs.cpu())
+            all_test_labels.append(labels.cpu())
+            test_loss += loss_function(outputs, labels).item()
+            X_list.append(rep.cpu())
+            Y_list.append(labels.cpu())
+
+    all_test_preds = torch.cat(all_test_preds).numpy()
+    all_test_labels = torch.cat(all_test_labels).numpy()
+    metric_dic_test = compute_test_metrics(
+        all_test_labels, all_test_preds, add_str='test', nb_class=num_labels)
+
+    run_ablation = config.get("run_ablation", True)
+
+    if run_ablation:
+        print("Collect hidden features for Representation Analysis === ")
+        X_test = torch.cat(X_list, dim=0).numpy()
+        Y_test = torch.cat(Y_list, dim=0).numpy()
+        sil, dbi = evaluate_embedding(
+            X_test, Y_test,
+            keep_fraction=config.get("fraction", 0.5)
+        )
+    else:
+        print("Skipping ablation study (run_ablation=False)")
+        sil, dbi = None, None
+
+    wandb.summary["bce_loss_test"] = test_loss / len(dataloader_test)
+    wandb.summary["best_epoch"] = best_epoch
+    wandb.summary["best_val_f1_micro"] = best_f1_micro_val
+    for key, value in metric_dic_test.items():
         wandb.summary[key] = value
+    if sil is not None:
+        wandb.summary["silhouette_test"] = sil
+        wandb.summary["dbi_test"] = dbi
 
     wandb.finish()
