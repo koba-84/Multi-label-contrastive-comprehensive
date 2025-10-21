@@ -296,6 +296,8 @@ def traine_linear_classifier_end_to_end(linear_classifier: nn.Module,
             optim.step()
             lr_scheduler.step()
         # --- validation ---
+        # Check validation metrics every epoch so we can restore the best
+        # performing weights for both backbone and classifier afterwards.
         model.eval()
         linear_classifier.eval()
         preds_list = []
@@ -314,10 +316,10 @@ def traine_linear_classifier_end_to_end(linear_classifier: nn.Module,
         y_true = torch.cat(labels_list, dim=0).numpy()
         metrics = compute_test_metrics(y_true, y_pred, add_str="finetune", nb_class=y_true.shape[1])
         wandb.log({
-            "finetune/val_f1_micro": metrics["f1 micro finetune"],
-            "finetune/val_f1_macro": metrics["f1 macro finetune"],
-            "finetune/val_hamming_loss": metrics["hamming_loss finetune"],
-            "finetune/epoch": epoch
+            "classifier/epoch": epoch,
+            "classifier/val_f1_micro": metrics["f1 micro finetune"],
+            "classifier/val_f1_macro": metrics["f1 macro finetune"],
+            "classifier/val_hamming_loss": metrics["hamming_loss finetune"]
         })
         if metrics["f1 micro finetune"] > best_score:
             best_score = metrics["f1 micro finetune"]

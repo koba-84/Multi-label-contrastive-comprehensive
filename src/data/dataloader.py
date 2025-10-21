@@ -51,7 +51,15 @@ class MyCollateFunction():
             # Save all text
             texts.append(exemple[0])
             # Save all labels
-            labels.append(torch.tensor(exemple[1].astype(int)))
+            try:
+                labels.append(torch.tensor(exemple[1].astype(int)))
+            except ValueError as e:
+                print(f"Label values: {exemple[1]}")
+                print(f"Label dtype: {exemple[1].dtype}")
+                print(f"Contains NaN: {pd.isna(exemple[1]).any()}")
+                print(f"Text: {exemple[0][:100]}...")  # 最初の100文字
+                print(f"nan_mask: {exemple[2]}")
+                raise e
             nan_masks.append(int(exemple[2]))
         inputs = self.tokenizer(texts,
                                 truncation=True,

@@ -240,7 +240,21 @@ def trainer(config: Dict, entity_name: str):
                group=config["merge_groupe"],
                entity=entity_name,
                config=config)
-    
+
+    wandb.define_metric("cl_epoch")
+    wandb.define_metric("cl_test_step")
+    wandb.define_metric("cl_loss_train", step_metric="cl_epoch")
+    wandb.define_metric("cl_loss_val", step_metric="cl_epoch")
+    wandb.define_metric("f1 micro test", step_metric="cl_test_step")
+    wandb.define_metric("f1 macro test", step_metric="cl_test_step")
+    wandb.define_metric("hamming_loss test", step_metric="cl_test_step")
+    wandb.define_metric("silhouette_test", step_metric="cl_test_step")
+    wandb.define_metric("dbi_test", step_metric="cl_test_step")
+    wandb.define_metric("classifier/epoch")
+    wandb.define_metric("classifier/val_f1_micro", step_metric="classifier/epoch")
+    wandb.define_metric("classifier/val_f1_macro", step_metric="classifier/epoch")
+    wandb.define_metric("classifier/val_hamming_loss", step_metric="classifier/epoch")
+
     # Set name of the run in Wandb
     wandb.run.name = config["name_run"]
 
@@ -340,8 +354,11 @@ def trainer(config: Dict, entity_name: str):
                                             dataloader_val=dataloader_val,
                                             loss_function=loss_contrastive_val,
                                             batch_size_val_test=BATCH_EVAL_TEST)
-        wandb.log({"loss_train": total_loss/len(dataloader_train),
-                  "loss_val": current_val_loss}, step=step)
+        wandb.log({
+            "cl_epoch": step,
+            "cl_loss_train": total_loss / len(dataloader_train),
+            "cl_loss_val": current_val_loss
+        })
         if current_val_loss <= best_loss_save:
             best_loss_save = current_val_loss
             save_best_model(model=model, config=config, score=current_val_loss)
@@ -394,7 +411,10 @@ def trainer(config: Dict, entity_name: str):
     print("Compute Metrics === ")
     config_res = compute_test_metrics(target_test.numpy(
     ), pred_test.numpy(), add_str='test', nb_class=config['nb_labels'])
-    wandb.log(config_res, step=step)
+    cl_test_step = 0
+    log_data = {"cl_test_step": cl_test_step}
+    log_data.update(config_res)
+    wandb.log(log_data)
 
     # ablation study: evaluate embeddings
     run_ablation = config.get("run_ablation", True)
@@ -414,7 +434,11 @@ def trainer(config: Dict, entity_name: str):
             X_test, Y_test,
             keep_fraction=config["fraction"]  # 頻出ラベル組合せの上位50%
         )
-        wandb.log({"silhouette_test": sil, "dbi_test": dbi}, step=step)
+        wandb.log({
+            "cl_test_step": cl_test_step,
+            "silhouette_test": sil,
+            "dbi_test": dbi
+        })
     else:
         print("Skipping ablation study (run_ablation=False)")
 
@@ -499,7 +523,12 @@ def eval_model_linear_probe(step: int, name: str, model: nn.Module, dataloader_t
     # Config res for our val
     config_res = compute_test_metrics(target_val.numpy(), pred_val.numpy(
     ), add_str=name, nb_class=config['nb_labels'])
-    wandb.log(config_res, step=step)
+    wandb.log({
+        "classifier/epoch": step,
+        "classifier/val_f1_micro": config_res["f1 micro " + name],
+        "classifier/val_f1_macro": config_res["f1 macro " + name],
+        "classifier/val_hamming_loss": config_res["hamming_loss " + name]
+    })
     print(config_res)
     return config_res["f1 micro " + name], final_projection_model
 
@@ -528,7 +557,12 @@ def eval_model_finetune(step: int, name: str, model: nn.Module, dataloader_train
                                          device=DEVICE)
     config_res = compute_test_metrics(target_val.numpy(), pred_val.numpy(),
                                       add_str=name, nb_class=config['nb_labels'])
-    wandb.log(config_res, step=step)
+    wandb.log({
+        "classifier/epoch": step,
+        "classifier/val_f1_micro": config_res["f1 micro " + name],
+        "classifier/val_f1_macro": config_res["f1 macro " + name],
+        "classifier/val_hamming_loss": config_res["hamming_loss " + name]
+    })
     print(config_res)
     return config_res["f1 micro " + name], linear_classifier
 
@@ -595,6 +629,20 @@ def train_BCE(config: Dict, dataloader_train: DataLoader, dataloader_val: DataLo
                group=config["merge_groupe"],
                entity=entity_name,
                config=config)
+
+    wandb.define_metric("classifier/epoch")
+    wandb.define_metric("bce_loss_train", step_metric="classifier/epoch")
+    wandb.define_metric("bce_loss_val", step_metric="classifier/epoch")
+    wandb.define_metric("bce_loss_test", step_metric="classifier/epoch")
+    wandb.define_metric("encoder_frozen", step_metric="classifier/epoch")
+    wandb.define_metric("f1 micro val", step_metric="classifier/epoch")
+    wandb.define_metric("f1 macro val", step_metric="classifier/epoch")
+    wandb.define_metric("hamming_loss val", step_metric="classifier/epoch")
+    wandb.define_metric("f1 micro test", step_metric="classifier/epoch")
+    wandb.define_metric("f1 macro test", step_metric="classifier/epoch")
+    wandb.define_metric("hamming_loss test", step_metric="classifier/epoch")
+    wandb.define_metric("silhouette_test", step_metric="classifier/epoch")
+    wandb.define_metric("dbi_test", step_metric="classifier/epoch")
     
     dic_loss = {"bce": nn.BCEWithLogitsLoss(), "ZLPR": Zlpr(), "asymetric": AsymmetricLoss(gamma_neg=3, gamma_pos=0, clip=0.3), "focal": AsymmetricLoss(gamma_neg=2, gamma_pos=0)}	
     # replace the string 'bce' in  config["merge_groupe"] by the loss function used
@@ -670,12 +718,13 @@ def train_BCE(config: Dict, dataloader_train: DataLoader, dataloader_val: DataLo
 
         metric_dic_val = compute_test_metrics(
             all_val_labels, all_val_preds, add_str='val', nb_class=num_labels)
-        wandb.log({"encoder_frozen": freeze_flag,
-                   "bce_loss_train": avg_train_loss,
-                   "bce_loss_val": val_loss / len(dataloader_val),
-                   "learning_rate": lr_scheduler.get_last_lr()[0],
-                   **metric_dic_val
-                   }, step=epoch)
+        wandb.log({
+            "classifier/epoch": epoch,
+            "encoder_frozen": freeze_flag,
+            "bce_loss_train": avg_train_loss,
+            "bce_loss_val": val_loss / len(dataloader_val),
+            **metric_dic_val
+        })
 
         # Do the same for test set
         test_loss = 0.0
@@ -702,9 +751,11 @@ def train_BCE(config: Dict, dataloader_train: DataLoader, dataloader_val: DataLo
         all_test_labels = torch.cat(all_test_labels).numpy()
         metric_dic_test = compute_test_metrics(
             all_test_labels, all_test_preds, add_str='test', nb_class=num_labels)
-        wandb.log({"bce_loss_test": test_loss / len(dataloader_test),
-                   **metric_dic_test
-                   }, step=epoch)
+        wandb.log({
+            "classifier/epoch": epoch,
+            "bce_loss_test": test_loss / len(dataloader_test),
+            **metric_dic_test
+        })
         
         run_ablation = config.get("run_ablation", True)
 
@@ -716,6 +767,11 @@ def train_BCE(config: Dict, dataloader_train: DataLoader, dataloader_val: DataLo
                 X_test, Y_test,
                 keep_fraction=config["fraction"]  # 頻出ラベル組合せの上位50%
             )
+            wandb.log({
+                "classifier/epoch": epoch,
+                "silhouette_test": sil,
+                "dbi_test": dbi
+            })
         else:
             print("Skipping ablation study (run_ablation=False)")
             sil, dbi = None, None
@@ -729,6 +785,7 @@ def train_BCE(config: Dict, dataloader_train: DataLoader, dataloader_val: DataLo
                 best_metric_dic["dbi"] = dbi
 
     # log the dict of the best test metrics based on the best validation f1 micro as summary metrics
-    wandb.log(best_metric_dic)
+    for key, value in best_metric_dic.items():
+        wandb.summary[key] = value
 
     wandb.finish()

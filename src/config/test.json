@@ -1,5 +1,5 @@
 {
-    "dataset_name": ["aapd-10"],
+    "dataset_name": ["rcv1"],
     "SEED": [1],
     "lr": [2e-5],
     "lr_adding": [5e-5],
@@ -17,5 +17,6 @@
     "task_type": "NLP",
     "queue_size": [512],
     "fraction": [0.5],
-    "freeze_encoder": [true]
+    "freeze_encoder": [false],
+    "run_ablation": false
 }

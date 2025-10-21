@@ -8,6 +8,7 @@ from typing import Tuple
 TEXT_COLS = {
     "aapd": "abstract",
     "rcv1": "abstract",
+    "rcv1s": "abstract",
     # 必要に応じて他も追加
 }
 
