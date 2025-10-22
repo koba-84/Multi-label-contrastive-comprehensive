@@ -76,6 +76,10 @@ def compute_loss_contrastive(
     pos_masks = []
     neg_masks = []
     section_lengths = []
+    
+    # Initialize normalize to zero (will be accumulated from key/queue sections)
+    normalize = torch.zeros(labels_query.size(0), nb_labels, 
+                           dtype=labels_query.dtype, device=labels_query.device)
 
     # Prepare key section
     if key_features is not None and key_labels is not None and key_features.numel() > 0:
@@ -87,7 +91,7 @@ def compute_loss_contrastive(
         mask_or_key = mask_or_key.unsqueeze(2)
         mask_and_key = mask_and_key * (1 / mask_or_key) * alpha
         # Normalize denom per class
-        normalize = mask_and_key.sum(dim=1)  # B x L
+        normalize = normalize + mask_and_key.sum(dim=1)  # B x L
         # Queue will add later if exists; proto term added after sections collected
 
         sim_qk = output_features @ kfeat.T  # B x K
@@ -116,10 +120,7 @@ def compute_loss_contrastive(
         mask_or_queue = mask_or_queue.unsqueeze(2)
         mask_and_queue = mask_and_queue * (1 / mask_or_queue) * alpha
 
-        if 'normalize' in locals():
-            normalize = normalize + mask_and_queue.sum(dim=1)
-        else:
-            normalize = mask_and_queue.sum(dim=1)
+        normalize = normalize + mask_and_queue.sum(dim=1)
 
         sim_qq = output_features @ qfeat.T  # B x Q
         parts_features.append(sim_qq)
