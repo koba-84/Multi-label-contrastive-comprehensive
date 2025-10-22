@@ -25,6 +25,7 @@ from .loss.loss_contrastive_base import LossContrastiveBase
 from .loss.loss_contrastive_mscrg import LossContrastiveMSCRG
 from .loss.loss_contrastive_mscwrg import LossContrastiveMSCWRG
 from .loss.loss_contrastive_mulsupcon import LossContrastiveMulSupCon
+from .loss.loss_contrastive_nws import LossContrastiveNWS, compute_label_pair_similarity
 from .loss.zlpr import Zlpr, AsymmetricLoss
 from .basic_utils import (compute_val_loss, create_dataloader_hidden_space,
                           traine_linear_classifier, traine_linear_classifier_end_to_end,
@@ -112,9 +113,9 @@ def trainer(config: Dict, entity_name: str):
         # textカラムとnan_maskカラムを除外した列数がラベル数
         config['nb_labels'] = train_data.shape[1] - 2
         if config["loss"] == "bce":
-            print("=== BCE Training === ")
-            train_BCE(config, dataloader_train, dataloader_val,
-                      dataloader_test, entity_name, num_labels=config['nb_labels'], loss='bce',bce_loss='bce')
+            # print("=== BCE Training === ")
+            # train_BCE(config, dataloader_train, dataloader_val,
+            #           dataloader_test, entity_name, num_labels=config['nb_labels'], loss='bce',bce_loss='bce')
             # print("=== ZLPR Training === ")
             # train_BCE(config, dataloader_train, dataloader_val,
             #           dataloader_test, entity_name, num_labels=config['nb_labels'], loss='ZLPR',bce_loss='ZLPR')
@@ -146,9 +147,9 @@ def trainer(config: Dict, entity_name: str):
                                                                                                     collate=config["collate"],
                                                                                                     fraction=config["fraction"])
         if config["loss"] == "bce":
-            print("=== BCE Training === ")
-            train_BCE(config, dataloader_train, dataloader_val,
-                      dataloader_test, entity_name, num_labels=config['nb_labels'], loss='bce',bce_loss='bce')
+            # print("=== BCE Training === ")
+            # train_BCE(config, dataloader_train, dataloader_val,
+            #           dataloader_test, entity_name, num_labels=config['nb_labels'], loss='bce',bce_loss='bce')
             # print("=== ZLPR Training === ")
             # train_BCE(config, dataloader_train, dataloader_val,
             #           dataloader_test, entity_name, num_labels=config['nb_labels'], loss='ZLPR',bce_loss='ZLPR')
@@ -201,6 +202,23 @@ def trainer(config: Dict, entity_name: str):
     scaler = GradScaler()
     # Define loss function for training and testing
     #### Define our loss ####
+    
+    # NWS用のラベル類似度行列を事前計算
+    sim_matrix_nws = None
+    if config["loss"] == "nws":
+        print("=== Computing label similarity matrix for NWS ===")
+        all_labels = []
+        for batch in tqdm(dataloader_train, desc="Collecting labels"):
+            all_labels.append(batch['labels'])
+        Y_train = torch.cat(all_labels, dim=0)  # (N, L)
+        
+        # 類似度行列を計算
+        sim_matrix_nws = compute_label_pair_similarity(
+            Y=Y_train,
+            method=config["sim_method"]  # 'npmi' or 'jaccard'
+        )
+        print(f"Label similarity matrix computed: shape={sim_matrix_nws.shape}")
+    
     if config["loss"] == "proto": 
         loss_contrastive = LossContrastiveProtoOnly(
             alpha=0, beta=0, temp=config['temp'])
@@ -231,6 +249,13 @@ def trainer(config: Dict, entity_name: str):
             alpha=1, beta=1, temp=config['temp'])
         loss_contrastive_val = LossContrastiveMulSupCon(
             alpha=1, beta=1, temp=config['temp'])
+    elif config["loss"] == "nws":
+        loss_contrastive = LossContrastiveNWS(
+            alpha=1, beta=config["beta"], temp=config['temp'],
+            agg=config["agg"], sim=sim_matrix_nws)
+        loss_contrastive_val = LossContrastiveNWS(
+            alpha=1, beta=config["beta"], temp=config['temp'],
+            agg=config["agg"], sim=sim_matrix_nws)
     else:
         raise ValueError(f"Loss {config['loss']} not implemented")
     ##########################################
@@ -298,7 +323,7 @@ def trainer(config: Dict, entity_name: str):
                                labels_query=current_labels,
                                prototype=model.get_prototype())
 
-            if config["loss"] in {"mulsupcon", "msc"}:
+            if config["loss"] in {"mulsupcon", "msc", "nws"}:
                 loss_kwargs.update(queue_feats=queue_feats_for_loss,
                                    queue_labels=queue_labels_for_loss,
                                    key_feats=normalize_key,

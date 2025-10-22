@@ -1,466 +1,176 @@
-# wandb.define_metricを用いた適切なログ管理の要件定義
+# LossContrastiveNWS 修正要件（DCL＋負例重み付け／ハイパラ更新）
+
+## 対象
+- `src/trainer/loss/loss_contrastive_nws.py` の内部実装（外部APIは最小限の変更方針を明記）
+
+## ゴール
+- NWS に Decoupled Contrastive Learning（分母＝負例のみ）を導入し、さらに負例にラベル間類似度に基づく重み付けを行う。
+- ハイパラを整理（beta は維持、agg と sim を追加）。
+- 学習前にデータ全体からラベルペア類似度行列 S (L×L) を算出し、Loss のインスタンス化時に渡す。
+
+
+## NWS（DCL 適用, MoCo準拠）主公式＋補足
+
+主要式（インスタンス i の損失と全体損失）
+$$
+\ell_i \;=\; -\frac{1}{|y_i|}\sum_{r \in \mathcal{P}_i^{+}} w_{ir}\; \log 
+\frac{\exp\bigl((z_i^{\top} v_r)/\tau\bigr)}{\sum_{r' \in \mathcal{N}_i^{-}} \beta_{r'}\, a_{ir'}\, \exp\bigl((z_i^{\top} v_{r'})/\tau\bigr)}\,,
+\qquad
+\mathcal{L} \;=\; \frac{1}{B}\sum_{i=1}^B \ell_i.
+$$
+
+集合定義（DCL 適用, MoCo準拠）
+- 参照集合 $\mathcal{R}_i = \mathcal{R}_i^{\text{key}} \cup \mathcal{R}_i^{\text{que}} \cup \mathcal{R}_i^{\text{proto}}$（現ミニバッチ内の in-batch 参照は含めない）。
+- 正例集合 $\mathcal{P}_i^{+}$ と負例集合 $\mathcal{N}_i^{-}$：
+	- キー/キュー: $r\in \mathcal{P}_i^{+}$ もし $\sum_{c=1}^L y_{i,c}\, y_{r,c} \ge 1$、それ以外は $\mathcal{N}_i^{-}$。
+	- プロトタイプ: $p_c\in \mathcal{P}_i^{+}$ もし $y_{i,c}=1$、$p_c\in \mathcal{N}_i^{-}$ もし $y_{i,c}=0$。
+- 分母は負例のみの総和: $\sum_{r'\in \mathcal{N}_i^{-}}$。
+
+補足（定義）
+- 参照と温度・内積
+	- $\mathcal{R}_i$: 参照の集合（key、queue、プロトタイプ $c$）。
+	- $\tau$: 温度。類似度は内積 $z_i^{\top} v_r$（$v_r\in\{k_k,q_q,p_c\}$）。
+- 正例・負例（DCL）
+	- 正例集合 $\mathcal{P}_i^{+}$、負例集合 $\mathcal{N}_i^{-}$ をマルチラベルの一致で定義（prototype は $L_r=\{c\}$ とみなす）。
+- 分母の重み（β と類似度）
+	- 類似度行列 $S\in[0,1]^{L\times L}$、インスタンスのラベル集合 $L_i=\{c\mid y_{i,c}=1\}$、参照のラベル集合 $L_r$ を用意（prototype は $L_r=\{c\}$、それ以外は対応ラベル集合）。
+	- 集約類似度（agg=mean|max）
+		$$
+		\mathrm{sim}_{\mathrm{agg}}(i,r)=\begin{cases}
+		\dfrac{1}{|L_i|\,|L_r|}\sum_{c\in L_i}\sum_{d\in L_r} S_{cd}\;\; (|L_i|\,|L_r|>0), & \text{mean},\\
+		\max\limits_{c\in L_i,\, d\in L_r} S_{cd}\;\; (|L_i|>0,|L_r|>0), & \text{max}.
+		\end{cases}
+		$$
+	- 分母の重み: 
+		- キー/キュー: $a_{ir}=1-\mathrm{sim}_{\mathrm{agg}}(i,r)$
+		- プロトタイプ: $a_{ir}=1$（プロトタイプは常に1）
+	- セクション係数: $\beta_r=\beta$（キー/キュー）、$\beta_r=1$（プロトタイプ）（$\beta_{r}$ は参照 $r$ の所属セクションで決まる）。
+- 分子重み $w_{ir}$ は MSC の定義を踏襲（本仕様では詳細省略）。
+  - 実装規定: MSC の `w = torch.cat(parts_weights, dim=1) * mask_diagonal` パターンを使用。DCL 適用では、この w に正例マスク `pos_mask_concat` を乗算して `w_numerator = w * pos_mask_concat` とし、分子の重みとする。分子重みには類似度重み $a_{ir}$ を適用しない（分母側のみ適用）。
+
+備考
+- $z_i, p_c$ は L2 正規化済みを想定。
+- 本式は現状実装の挙動（self 除外、β によるセクション重み、プロトタイプ重み=1、インスタンス内ラベル数での正規化）を忠実に表す。
+
+## 仕様（契約）
+
+### 1) API 変更（クラス生成）
+- 旧: `LossContrastiveNWS(alpha, beta, temp)`
+- 新: `LossContrastiveNWS(alpha, beta, temp, agg, sim)`
+	- beta は引き続き使用（分母のセクション係数）
+	- agg: ラベル間類似度の集約方法（'mean' または 'max'、デフォルトなし・必須引数）
+	- sim: L×L のラベルペア類似度行列（`compute_label_pair_similarity` の結果を渡す、np.ndarray または torch.Tensor）
+	- コンストラクタ内で sim を `self.sim = torch.as_tensor(sim, dtype=torch.float32)` で Tensor 化し保持（forward 時に device へ移動）
+- `forward` の引数シグネチャは不変（呼び出し側の変更影響を最小化）
+
+### 2) 事前計算関数（新規）
+関数名（提案）: `compute_label_pair_similarity(Y, method) -> np.ndarray[L, L]`
+- method: 'npmi' または 'jaccard'（デフォルトなし、呼び出し側で明示指定、未指定時はエラー）
+- 入力: N×L の multi-hot 行列（学習データ全体のラベル指示、np.ndarray または torch.Tensor）
+- 出力: 対称 L×L 行列（float32、np.ndarray）
+- npmi:
+	- p_i = count(Y[:,i]=1)/N, p_ij = count(Y[:,i]=1 & Y[:,j]=1)/N
+	- PMI = log(p_ij / (p_i p_j)), NPMI = PMI / (-log p_ij)
+	- 範囲 [-1,1] を [0,1] に線形変換: sim = (NPMI+1)/2。
+	- 未定義ケースの扱い: p_ij=0 または p_i=0 または p_j=0 のときは sim=0 とする。
+	- 対称性保証: 数値誤差対策として `S = (S + S.T) / 2` で強制対称化を推奨。
+- jaccard:
+	- 行列演算版: `intersection = Y.T @ Y`, `sum_i = Y.sum(0)`, `union = sum_i[:, None] + sum_i[None, :] - intersection`, `S = intersection / (union + 1e-10)` （ゼロ除算回避）
+	- sim = |A∩B| / |A∪B|
+- 対角は1.0。
+- 配置: `src/trainer/loss/loss_contrastive_nws.py`（損失クラスと同一ファイル内）
+
+### 3) DCL（分母＝負例のみ, MoCo準拠）
+- 正例/負例の定義（マルチラベル）:
+	- key: `pos_mask_key = (labels_query @ key_labels.T > 0).float()`, `neg_mask_key = 1 - pos_mask_key`
+	- queue: `pos_mask_queue = (labels_query @ queue_labels.T > 0).float()`, `neg_mask_queue = 1 - pos_mask_queue`
+	- prototype: `pos_mask_proto = labels_query` (B×L、y_{i,c}=1 なら正例), `neg_mask_proto = 1 - labels_query`
+- 分母は負例集合のみで構成:
+	- 各セクションの neg_mask に、セクション係数 `beta_section`（key/que=beta, proto=1）と類似度重み `a_ir` を乗算。
+	- 全セクション（key, queue, proto）を concat して一括処理する（MSC の concatenation パターン）。
+		```python
+		# 参照総数（バッチ内は含めない）
+		total_refs = K + Q + L
+		# セクション係数ベクトル（concat 後の全参照に対応）
+		normalize_mask = torch.full((total_refs,), beta, device=...)
+		normalize_mask[total_refs - nb_labels:] = 1  # prototype 部分を1に
+		# 分母マスク（DCL 用に負例のみ）
+		mask_denom = neg_mask_concat * normalize_mask.unsqueeze(0) * a_ir_concat
+		```
+	- 参照集合に self は存在しないため、対角マスク（self 除外）は不要。`log_softmax_temp` に渡す mask は `mask_denom`（正例は分母から除外される）。
+- 前提: キュー・プロトタイプを利用する本実装では、分母が空になる状況は発生しないため、フォールバックは不要。
+
+### 4) 負例重み付け（ラベルペア類似度 → 集約 → 1から減算）
+- 目的: ラベル的に関連する（共起しやすい）負例は弱く、全く無関係な負例は強く扱う（関連度で負例を重み付け）。
+- 類似度行列 S（L×L, [0,1]）と各インスタンスのラベル集合を用いて、各セクションの集約類似度 sim_agg∈[0,1] を計算（MoCo準拠で key/queue/proto のみ）:
+	- **mean 集約**（行列演算、高速）:
+		- key (B×K): `sim_agg_key = (labels_query @ S @ key_labels.T) / (labels_query.sum(1, keepdim=True) @ key_labels.sum(1, keepdim=True).T)`
+		- queue (B×Q): `sim_agg_queue = (labels_query @ S @ queue_labels.T) / (labels_query.sum(1, keepdim=True) @ queue_labels.sum(1, keepdim=True).T)`
+		- prototype (B×L): `sim_agg_proto = (labels_query @ S) / (labels_query.sum(1, keepdim=True))`（prototype は L 個の one-hot とみなす）
+	- **max 集約**（ブロードキャスト＋masked max）:
+		- key (B×K):
+			```python
+			# S: L×L, labels_query: B×L, key_labels: K×L
+			mask = labels_query.bool().unsqueeze(1).unsqueeze(3) & key_labels.bool().unsqueeze(0).unsqueeze(2)  # B×K×L×L
+			sim_all = S.unsqueeze(0).unsqueeze(0).expand(B, K, -1, -1)
+			sim_agg_key = sim_all.masked_fill(~mask, float('-inf')).amax(dim=(2,3))  # B×K
+			```
+		- queue (B×Q): 同様に `key_labels` を `queue_labels` に置換
+		- prototype (B×L): `sim_agg_proto = (labels_query.unsqueeze(2) * S.unsqueeze(0)).amax(dim=1)[0]`（B×L）
+- 負例の重み:
+	- key/queue: `a_ir = 1 - sim_agg`
+	- プロトタイプ: `a_ir_proto = torch.ones_like(sim_agg_proto)`（常に1、形状 B×L、類似度に基づく重み付けは行わない）
+- 分母の重み: 参照ごとに `beta_section * a_ir` を neg_mask に乗算（セクション3参照）
+
+### 5) 非変更点
+- 分子の重み w、alpha の扱い、温度 temp、勾配計算の流れは維持
+- `forward` の引数シグネチャはそのまま
+
+### 6) マイグレーション注意
+- trainer 側の変更（本仕様範囲外、別途対応）: 
+	- 現状 trainer.py では `LossContrastiveNWS(alpha=1, beta=config["beta"], temp=config['temp'])` で beta を渡している。
+	- 新仕様では、これに加えて `agg` と `sim` を引数に追加: `LossContrastiveNWS(alpha=1, beta=config["beta"], temp=config['temp'], agg='mean', sim=sim_matrix)`
+	- sim_matrix の事前計算: trainer.py で loss インスタンス化の前に、全訓練データのラベル行列 Y_train (N×L) を収集し、`sim_matrix = compute_label_pair_similarity(Y_train, method='npmi')` を実行して結果を渡す。
+
+---
+
+## 実装手順（MoCo準拠, in-batch を参照に含めない）
+1. `compute_label_pair_similarity` を `loss_contrastive_nws.py` 内に追加（N×L → L×L）。`npmi`/`jaccard` に対応。
+2. NWS のコンストラクタを新仕様に更新: `__init__(self, alpha, beta, temp, agg, sim)` で agg と sim を受け取る。sim は内部で `self.sim = torch.as_tensor(sim, dtype=torch.float32)` で Tensor 化。
+3. `compute_loss_contrastive` (または forward 内) で:
+	 - sim を `self.sim.to(output_query.device)` で同一デバイスへ移動。
+	 - **DCL 正例/負例マスク構築**（各セクションで pos_mask, neg_mask を作成）:
+		 - key/queue/prototype のみ（in-batch は含めない）
+	 - **集約類似度 sim_agg の計算**（agg=mean|max に応じて）:
+		 - mean: 行列演算（B×K, B×Q, B×L の各形状に対応）
+		 - max: ブロードキャスト＋masked max（B×K, B×Q, B×L）
+	 - **負例重み a_ir の計算**:
+		 - key/queue: `a_ir = 1 - sim_agg`
+		 - prototype: `a_ir = torch.ones_like(sim_agg_proto)`（常に1、形状 B×L）
+	 - **セクション係数 beta_r の適用**: 
+		 - MSC の `normalize_mask` パターンを参考に、全セクションを concat した後に適用
+		 - key/queue 部分に beta、prototype 部分に 1 を配置
+	 - **分母マスクの構築**: `mask_denom = neg_mask_concat * normalize_mask.unsqueeze(0) * a_ir_concat`（各セクションを concat して一つのテンソルに）
+	 - **分子重みの取得**: MSC の concat パターンを踏襲し、`w_numerator = w_concat * pos_mask_concat`（分子には a_ir を適用しない）
+	 - **log-sum-exp 計算**: 
+		 - MSC の `log_softmax_temp(matrix=final_features, temp=temp, mask=...)` を活用
+		 - DCL 適用のため、mask には `mask_denom` を渡す（正例は分母から除外）
+		 - 最終損失: `loss = - (log_softmax * w_numerator).sum(dim=1)`（MSC と同様のパターン）
+4. 形状・dtype・device と数値安定性を点検。温度 τ は MSC の実装をそのまま使用（`log_softmax_temp` 関数）。
+5. 全セクション統合方法: MSC の `torch.cat(parts_features, dim=1)` および `torch.cat(parts_weights, dim=1)` パターンを踏襲（各セクションの logits と weights を dim=1 で concat）。in-batch セクションは存在しない。
+
+## 検証（最低限）
+- [ ] ダミー（B=4, L=3）で forward/勾配が通る（key/queue on/off）
+- [ ] 分母に正例が入らない（テンポラリ出力で確認）
+- [ ] agg=mean と agg=max で形状が崩れない
+
+## 補足（パフォーマンス）
+- agg=max はラベル次元 L が大きい場合に計算負荷が高くなるため、`mean` をデフォルト推奨。
+- 必要に応じて `max` 実装はブロック分割や近似で最適化可能（将来検討）。
+
+## 備考
+- 本メモは `loss_contrastive_nws.py` 専用。不要になったら随時更新/削除すること。
+
+---
 
-## 問題の背景
 
-### 現状の問題
-```
-wandb: WARNING Tried to log to step 1 that is less than the current step 40. 
-Steps must be monotonically increasing, so this data will be ignored.
-```
-
-- wandbの`step`は単調増加（monotonically increasing）である必要がある
-- 現在のコードでは、**2つの異なる学習フェーズ**（Contrastive LearningとClassifier Learning）が存在し、それぞれが独自のepochカウンターを持つべきだが、step値が混在している
-- そのため、特にClassifier Learning後のtest結果やablation結果がログされない問題が発生している
-
-### 根本原因
-
-本プロジェクトには**2つの独立した学習パイプライン**が存在する：
-
-
-
-1. **Contrastive Learning（対照学習）系手法のパイプライン - `trainer`関数**:
-     - **Phase 1**: Contrastive Learning Training
-         - `cl_epoch = 0, 1, 2, ..., cl_epochs-1`でログ
-         - `cl_loss_train`, `cl_loss_val`などをwandbに記録
-     - **Phase 2**: Classifier Learning（finetune）
-         - encoderと分類器（MLP等）をjointに学習する
-         - train_BCEは通らず、finetuneの実装は`src/trainer/basic_utils.py`の`traine_linear_classifier_end_to_end`等で管理されている
-         - linear probeは現状未対応（無視してよい）
-         - `classifier/epoch = 0, 1, 2, ..., classifier_epochs-1`でwandbにログ
-         - 現状のログは`finetune/val_f1_micro`など`finetune/`接頭辞付き（`traine_linear_classifier_end_to_end`参照）だが、finetuneとlinear probeの両方を共通化するため`classifier/`プレフィックスに統一する
-         - 実装例：
-```python
-for epoch in range(classifier_epochs):
-    # ... classifier training code ...
-    wandb.log({
-        "classifier/epoch": epoch,
-        "classifier/val_f1_micro": f1_micro_val,
-        "classifier/val_f1_macro": f1_macro_val,
-        "classifier/val_hamming_loss": hamming_loss_val
-    })
-```
-     - **Phase 3**: Test（最終評価）
-         - 学習済み分類器でテストデータを評価
-         - `cl_test_step = 0`（1回のみ）でテスト・ablation metrics（silhouette_test, dbi_test等）をwandbに記録
-     - **問題**: これら3つのphaseでstep値が混在すると衝突が起きるため、wandb.define_metricで明確に分離する必要がある
-
-2. **Classifier Learning（分類器学習）パイプライン - `train_BCE`関数**:
-   - **単一のPhase**: End-to-End Classifier Training
-     - `step = epoch (0, 1, 2, ..., classifier_epochs-1)`でログ
-     - 各epochで: `bce_loss_train`, `bce_loss_val`, validation/test metrics, ablation metricsを全てログ
-     - **問題**: 同じepoch値で複数回wandb.log()を呼び出すため、後続のログが無視される可能性がある
-
-### 問題の本質
-
-- **Contrastive LearningとClassifier Learningは別々の学習プロセス**であり、それぞれ独立したepoch軸を持つべき
-- 現在の実装では単一のstep軸を共有しようとしているため、step値の衝突が発生
-- 特に、Contrastive Learningが40 epochで完了した後、Classifier Learningが epoch=1 から開始しようとすると、「step 1 < step 40」という警告が発生
-
-## 解決方針
-
-### wandb.define_metricの活用
-`wandb.define_metric()`を使用して、**2つの独立した学習パイプライン**に対して別々のepoch軸を定義する。
-
-#### 学習パイプラインの分類
-
-本プロジェクトには以下の2つの**独立した学習パイプライン**が存在：
-
-
-1. **Contrastive Learning Pipeline (`trainer`関数)**
-    - **CL Training Phase**: 表現学習のためのContrastive Learning
-    - **Classifier Learning Phase (finetune)**: encoder+分類器のjoint学習（`traine_linear_classifier_end_to_end`等）
-    - **Test/Ablation Phase**: 最終評価
-
-2. **Classifier Learning Pipeline (`train_BCE`関数)**
-   - **Classifier Training Phase**: End-to-Endでの分類器学習
-   - 各epochでtrain/val/testを全て実行
-
-
-#### Epoch軸の設計
-
-
-各学習パイプライン・phaseに専用のepoch/step軸を割り当て：
-
-- **`cl_epoch`**: Contrastive Learning Trainingのepoch進捗（0, 1, 2, ..., cl_epochs-1）
-- **`classifier/epoch`**: Classifier Learning（finetune/BCE両方）のepoch進捗（0, 1, 2, ..., classifier_epochs-1）
-- **`cl_test_step`**: CLパイプラインの最終テスト・ablation評価（常に0、1回のみ実行）
-
-これにより、各phaseが完全に独立し、step値の衝突が発生しない。
-
-### 実装戦略
-
-
-#### 1. `trainer`関数（Contrastive Learning Pipeline）の修正
-
-**Epoch/step軸の定義:**
-- `cl_epoch`: Contrastive Learning Trainingで使用（0, 1, 2, ..., cl_epochs-1）
-- `cl_test_step`: CLパイプラインの最終テスト・ablation評価で使用（常に0、1回のみ）
-
-
-
-**wandb.define_metricの設定:**
-```python
-# wandb.init()の直後に設定
-wandb.define_metric("cl_epoch")
-wandb.define_metric("cl_test_step")
-
-# Contrastive Learning Training Phase metrics
-wandb.define_metric("cl_loss_train", step_metric="cl_epoch")
-wandb.define_metric("cl_loss_val", step_metric="cl_epoch")
-
-# Test/Ablation metrics（CLパイプラインの最終評価）
-wandb.define_metric("f1 micro test", step_metric="cl_test_step")
-wandb.define_metric("f1 macro test", step_metric="cl_test_step")
-wandb.define_metric("hamming_loss test", step_metric="cl_test_step")
-wandb.define_metric("silhouette_test", step_metric="cl_test_step")
-wandb.define_metric("dbi_test", step_metric="cl_test_step")
-
-# Classifier Learning Phase (finetune / linear probe) metrics
-wandb.define_metric("classifier/epoch")
-wandb.define_metric("classifier/val_f1_micro", step_metric="classifier/epoch")
-wandb.define_metric("classifier/val_f1_macro", step_metric="classifier/epoch")
-wandb.define_metric("classifier/val_hamming_loss", step_metric="classifier/epoch")
-```
-
-**ログの修正:**
-```python
-# ===== Phase 1: Contrastive Learning Training =====
-for step in range(config["epochs"]):
-    # ... training code ...
-    wandb.log({
-        "cl_epoch": step,
-        "cl_loss_train": total_loss/len(dataloader_train),
-        "cl_loss_val": current_val_loss
-    })
-
-# ===== Phase 2: Classifier Learning (finetune / linear probe) =====
-for epoch in range(classifier_epochs):
-    # ... classifier training code ...
-    wandb.log({
-        "classifier/epoch": epoch,
-        "classifier/val_f1_micro": f1_micro_val,
-        "classifier/val_f1_macro": f1_macro_val,
-        "classifier/val_hamming_loss": hamming_loss_val
-    })
-
-# ===== Phase 3: Test/Ablation (CLパイプライン最終評価) =====
-cl_test_step = 0
-wandb.log({
-    "cl_test_step": cl_test_step,
-    "f1 micro test": f1_micro,
-    "f1 macro test": f1_macro,
-    "hamming_loss test": hamming_loss
-})
-wandb.log({
-    "cl_test_step": cl_test_step,
-    "silhouette_test": sil, 
-    "dbi_test": dbi
-})
-```
-
-#### 2. `train_BCE`関数（Classifier Learning Pipeline）の修正
-
-**Epoch軸の定義:**
-- `classifier/epoch`: Classifier Learningのepochで使用（0, 1, 2, ..., classifier_epochs-1）
-- 各epoch内でtrain/val/testを全て実行し、同じ`classifier/epoch`値でログ
-- Best metricsは`wandb.summary`で記録（epoch軸とは独立）
-
-**wandb.define_metricの設定:**
-```python
-# wandb.init()の直後に設定
-wandb.define_metric("classifier/epoch")
-
-# Classifier Training Phase metrics（各epochで記録）
-wandb.define_metric("bce_loss_train", step_metric="classifier/epoch")
-wandb.define_metric("bce_loss_val", step_metric="classifier/epoch")
-wandb.define_metric("bce_loss_test", step_metric="classifier/epoch")
-wandb.define_metric("encoder_frozen", step_metric="classifier/epoch")
-
-# Validation metrics（各epochで記録）
-wandb.define_metric("f1 micro val", step_metric="classifier/epoch")
-wandb.define_metric("f1 macro val", step_metric="classifier/epoch")
-wandb.define_metric("hamming_loss val", step_metric="classifier/epoch")
-
-# Test metrics（各epochで記録）
-wandb.define_metric("f1 micro test", step_metric="classifier/epoch")
-wandb.define_metric("f1 macro test", step_metric="classifier/epoch")
-wandb.define_metric("hamming_loss test", step_metric="classifier/epoch")
-
-# Ablation metrics（test時のみ、run_ablation=Trueの場合）
-wandb.define_metric("silhouette_test", step_metric="classifier/epoch")
-wandb.define_metric("dbi_test", step_metric="classifier/epoch")
-```
-
-**ログの修正:**
-```python
-# ===== Classifier Learning Training =====
-for epoch in range(config["epochs"]):
-    # ... training code ...
-    
-    # Validation metrics
-    wandb.log({
-        "classifier/epoch": epoch,
-        "encoder_frozen": freeze_flag,
-        "bce_loss_train": avg_train_loss,
-        "bce_loss_val": val_loss / len(dataloader_val),
-        # 例: metric_dic_valは f1 micro val, f1 macro val, hamming_loss val を含める
-        **metric_dic_val
-    })
-    
-    # Test metrics
-    wandb.log({
-        "classifier/epoch": epoch,
-        "bce_loss_test": test_loss / len(dataloader_test),
-        # 例: metric_dic_testは f1 micro test, f1 macro test, hamming_loss test を含める
-        **metric_dic_test
-    })
-    
-    # Ablation metrics（run_ablation=Trueの場合のみ、testタイミングで）
-    if run_ablation:
-        wandb.log({
-            "classifier/epoch": epoch,
-            "silhouette_test": sil, 
-            "dbi_test": dbi
-        })
-
-# Best metricsはwandb.summaryで記録（epoch軸とは独立）
-for key, value in best_metric_dic.items():
-    wandb.summary[key] = value
-```
-
-## 実装の詳細
-
-### 修正箇所
-
-#### A. `trainer`関数（Contrastive Learning Pipeline）
-
-**修正箇所1: wandb.init()直後にdefine_metricを追加**
-- 場所: 約240行目、`wandb.init()`の直後
-- 追加内容: 
-```python
-# Define custom step metrics for Contrastive Learning Pipeline
-wandb.define_metric("cl_epoch")
-wandb.define_metric("cl_test_step")
-
-# Contrastive Learning Training Phase metrics
-wandb.define_metric("cl_loss_train", step_metric="cl_epoch")
-wandb.define_metric("cl_loss_val", step_metric="cl_epoch")
-
-# Contrastive Learning Test/Ablation Phase metrics
-wandb.define_metric("f1 micro test", step_metric="cl_test_step")
-wandb.define_metric("f1 macro test", step_metric="cl_test_step")
-wandb.define_metric("hamming_loss test", step_metric="cl_test_step")
-wandb.define_metric("silhouette_test", step_metric="cl_test_step")
-wandb.define_metric("dbi_test", step_metric="cl_test_step")
-
-# Classifier Learning Phase (finetune / linear probe) metrics
-wandb.define_metric("classifier/epoch")
-wandb.define_metric("classifier/val_f1_micro", step_metric="classifier/epoch")
-wandb.define_metric("classifier/val_f1_macro", step_metric="classifier/epoch")
-wandb.define_metric("classifier/val_hamming_loss", step_metric="classifier/epoch")
-```
-
-**修正箇所2: `traine_linear_classifier_end_to_end`等のログキー統一**
-- 場所: `src/trainer/basic_utils.py` の `traine_linear_classifier_end_to_end`（必要に応じて同様のログ処理を行う関数）
-- 変更内容:
-```python
-# 修正前
-wandb.log({
-    "finetune/val_f1_micro": metrics["f1 micro finetune"],
-    "finetune/val_f1_macro": metrics["f1 macro finetune"],
-    "finetune/val_hamming_loss": metrics["hamming_loss finetune"],
-    "finetune/epoch": epoch
-})
-
-# 修正後
-wandb.log({
-    "classifier/epoch": epoch,
-    "classifier/val_f1_micro": metrics["f1 micro finetune"],
-    "classifier/val_f1_macro": metrics["f1 macro finetune"],
-    "classifier/val_hamming_loss": metrics["hamming_loss finetune"]
-})
-```
-- `classifier/epoch`をstep軸にし、finetune/linear probeのログを共通フォーマットに統一する
-- `trainer.py`内の`eval_model_linear_probe`と`eval_model_finetune`でも、`finetune/`接頭辞のキーをすべて`classifier/`接頭辞に揃える（例: `classifier/val_f1_micro`）ことでフェーズ間の命名整合性を保つ
-
-**修正箇所3: CL Training loopのログ修正**
-- 場所: 約340-344行目（Contrastive Learning Training loop内のwandb.log()呼び出し）
-- 変更内容: 
-```python
-# 修正前
-wandb.log({"cl_loss_train": total_loss/len(dataloader_train), 
-           "cl_loss_val": current_val_loss}, step=step)
-
-# 修正後
-wandb.log({
-    "cl_epoch": step,
-    "cl_loss_train": total_loss/len(dataloader_train), 
-    "cl_loss_val": current_val_loss
-})
-
-```
-
-**修正箇所4: CL Evaluationのtest metricsログ修正**
-- 場所: 約395-400行目（CL Training完了後のconfig_resをログする箇所）
-- 変更内容:
-```python
-# 修正前
-wandb.log(config_res, step=step)
-
-# 修正後
-cl_test_step = 0
-log_data = {"cl_test_step": cl_test_step}
-log_data.update(config_res)
-wandb.log(log_data)
-```
-
-**修正箇所5: CL Evaluationのablation metricsログ修正**
-- 場所: 約415行目（silhouette_test, dbi_testをログする箇所）
-- 変更内容:
-```python
-# 修正前
-wandb.log({"silhouette_test": sil, "dbi_test": dbi}, step=step)
-
-# 修正後
-wandb.log({
-    "cl_test_step": cl_test_step,
-    "silhouette_test": sil, 
-    "dbi_test": dbi
-})
-```
-
-#### B. `train_BCE`関数（Classifier Learning Pipeline）
-
-**修正箇所1: wandb.init()直後にdefine_metricを追加**
-- 場所: 約600行目、`wandb.init()`の直後
-- 追加内容:
-```python
-# Define custom step metrics for Classifier Learning Pipeline
-wandb.define_metric("classifier/epoch")
-
-# Classifier Learning Training Phase metrics
-wandb.define_metric("bce_loss_train", step_metric="classifier/epoch")
-wandb.define_metric("bce_loss_val", step_metric="classifier/epoch")
-wandb.define_metric("bce_loss_test", step_metric="classifier/epoch")
-wandb.define_metric("encoder_frozen", step_metric="classifier/epoch")
-
-# Validation metrics (各epochで記録)
-wandb.define_metric("f1 micro val", step_metric="classifier/epoch")
-wandb.define_metric("f1 macro val", step_metric="classifier/epoch")
-wandb.define_metric("hamming_loss val", step_metric="classifier/epoch")
-
-# Test metrics (各epochで記録)
-wandb.define_metric("f1 micro test", step_metric="classifier/epoch")
-wandb.define_metric("f1 macro test", step_metric="classifier/epoch")
-wandb.define_metric("hamming_loss test", step_metric="classifier/epoch")
-
-# Ablation metrics (run_ablation=Trueの場合のみ)
-wandb.define_metric("silhouette_test", step_metric="classifier/epoch")
-wandb.define_metric("dbi_test", step_metric="classifier/epoch")
-```
-
-**修正箇所2: Validation metricsのログ修正**
-- 場所: 約665-675行目（validation後のwandb.log()）
-- 変更内容:
-```python
-# 修正前
-wandb.log({
-    "encoder_frozen": freeze_flag,
-    "bce_loss_train": avg_train_loss,
-    "bce_loss_val": val_loss / len(dataloader_val),
-    "learning_rate": lr_scheduler.get_last_lr()[0],
-    **metric_dic_val
-}, step=epoch)
-
-# 修正後
-wandb.log({
-    "classifier/epoch": epoch,
-    "encoder_frozen": freeze_flag,
-    "bce_loss_train": avg_train_loss,
-    "bce_loss_val": val_loss / len(dataloader_val),
-    **metric_dic_val
-})
-```
-
-**修正箇所3: Test metricsのログ修正**
-- 場所: 約695-700行目（test後のwandb.log()）
-- 変更内容:
-```python
-# 修正前
-wandb.log({
-    "bce_loss_test": test_loss / len(dataloader_test),
-    **metric_dic_test
-}, step=epoch)
-
-# 修正後
-wandb.log({
-    "classifier/epoch": epoch,
-    "bce_loss_test": test_loss / len(dataloader_test),
-    **metric_dic_test
-})
-```
-
-**修正箇所4: Ablation metricsのログ修正**
-- 場所: 約715-720行目（silhouette/dbiのログ）
-- 変更内容:
-```python
-# 修正前
-wandb.log({"silhouette_test": sil, "dbi_test": dbi}, step=epoch)
-
-# 修正後
-        wandb.log({
-            "classifier/epoch": epoch,
-    "silhouette_test": sil, 
-    "dbi_test": dbi
-})
-```
-
-**修正箇所5: Best metricsの記録方法変更**
-- 場所: 約735行目（best_metric_dicのログ）
-- 変更内容:
-```python
-# 修正前
-wandb.log(best_metric_dic)
-
-# 修正後
-# Best metricsはwandb.summaryで記録（epoch軸とは独立）
-for key, value in best_metric_dic.items():
-    wandb.summary[key] = value
-```
-
-## 期待される効果
-
-1. **Step値の衝突完全回避**: 
-   - **Contrastive Learning Pipeline**: `cl_epoch`（Training）と`cl_test_step`（Evaluation）で完全に独立
-   - **Classifier Learning Pipeline**: `classifier/epoch`で独立
-   - 2つのパイプライン間で一切のstep値衝突が発生しない
-   
-2. **ログの完全性**: 
-   - 全てのメトリクスが正しく記録される
-   - 「step must be monotonically increasing」エラーが発生しない
-   
-3. **可読性向上**: 
-   - wandb UIで**2つの学習パイプライン**が明確に区別される
-   - Contrastive Learningの進捗とClassifier Learningの進捗が独立して表示される
-   - 各パイプラインのグラフが混在せず、分析が容易
-   
-4. **正確な実験追跡**: 
-   - Contrastive Learning: Training進捗（`cl_epoch`）と最終評価（`cl_test_step=0`）を明確に分離
-   - Classifier Learning: 各epochでのtrain/val/test進捗を一貫して追跡
-   
-5. **柔軟性**: 
-   - 将来的に新しい学習パイプラインを追加する際も、独立したepoch軸を定義するだけで対応可能
-   - メトリクスの追加も容易
-
-6. **明確な命名**: 
-   - `cl_epoch`: Contrastive Learning Training epoch
-   - `cl_test_step`: Contrastive Learning Evaluation step
-   - `cl_loss_*`: Contrastive Learningの損失ログ
-   - `classifier/epoch`および`classifier/*`: finetune/linear probeのメトリクス群
-   - `classifier/epoch`と`bce_loss_*`: BCE系パイプラインのステップと損失ログ
-   - パイプラインと用途が一目瞭然
-
-## 参考資料
-
-- wandb公式ドキュメント: https://docs.wandb.ai/ref/python/log
-- define_metric: https://docs.wandb.ai/guides/track/log/customize-logging-axes
