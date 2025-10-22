@@ -4,6 +4,9 @@ from torch import Tensor
 import torch.nn.functional as F
 import numpy as np
 
+# Epsilon to avoid divided by 0
+EPS = 1e-8
+
 
 def compute_or(query_tensor: Tensor, key_tensor: Tensor) -> Tensor:
     """Compute or function
@@ -42,7 +45,7 @@ def log_softmax_temp(matrix: Tensor, temp: float, mask: Tensor) -> Tensor:
     # Apply exp on logits
     exp_logits = torch.exp(logits)
     # Apply log softmax and remove mask + add numerator
-    log_prob = logits - torch.log((exp_logits * mask).sum(dim=1, keepdim=True))
+    log_prob = logits - torch.log((exp_logits * mask).sum(dim=1, keepdim=True) + EPS)
     # Return log_prob
     return log_prob
 
@@ -88,7 +91,7 @@ def compute_loss_contrastive(
         # MSC-style mask_and/mask_or for numerator weights
         mask_and_key = torch.einsum('ac,kc->akc', labels_query, klabels)
         mask_or_key = compute_or(query_tensor=labels_query, key_tensor=klabels)
-        mask_or_key = mask_or_key.unsqueeze(2)
+        mask_or_key = mask_or_key.unsqueeze(2).clamp_min(1.0)
         mask_and_key = mask_and_key * (1 / mask_or_key) * alpha
         # Normalize denom per class
         normalize = normalize + mask_and_key.sum(dim=1)  # B x L
@@ -117,7 +120,7 @@ def compute_loss_contrastive(
         qlabels = queue_labels.to(labels_query.dtype)
         mask_and_queue = torch.einsum('ac,qc->aqc', labels_query, qlabels)
         mask_or_queue = compute_or(query_tensor=labels_query, key_tensor=qlabels)
-        mask_or_queue = mask_or_queue.unsqueeze(2)
+        mask_or_queue = mask_or_queue.unsqueeze(2).clamp_min(1.0)
         mask_and_queue = mask_and_queue * (1 / mask_or_queue) * alpha
 
         normalize = normalize + mask_and_queue.sum(dim=1)
@@ -150,7 +153,7 @@ def compute_loss_contrastive(
     normalize = normalize + (- alpha / labels_query.sum(dim=1, keepdim=True) + 1) * labels_query
 
     # Finalize numerator weights per section (sum over label dim then divide by normalize per class)
-    denom = normalize.unsqueeze(1)  # B x 1 x L
+    denom = normalize.unsqueeze(1) + EPS  # B x 1 x L
     parts_weights_list = []
     if weights_key is not None:
         w_key = (weights_key / denom).sum(dim=2)  # B x K
@@ -159,7 +162,7 @@ def compute_loss_contrastive(
         w_queue = (weights_queue / denom).sum(dim=2)  # B x Q
         parts_weights_list.append(w_queue)
     # Prototype weights
-    w_proto = labels_query / normalize  # B x L
+    w_proto = labels_query / (normalize + EPS)  # B x L
     parts_weights_list.append(w_proto)
 
     # Concat features, weights, pos/neg masks
@@ -178,7 +181,7 @@ def compute_loss_contrastive(
     # mean agg or max agg
     def mean_agg(A: Tensor, B: Tensor) -> Tensor:
         # A: BxL, B: RxL -> returns BxR
-        return (A @ S @ B.T) / (A.sum(1, keepdim=True) @ B.sum(1, keepdim=True).T)
+        return (A @ S @ B.T) / (A.sum(1, keepdim=True) @ B.sum(1, keepdim=True).T + EPS)
 
     a_ir_list = []
     # key
@@ -264,7 +267,7 @@ def constrative(output_features: Tensor,
                                                 key_features=key_features,
                                                 key_labels=key_labels,
                                                 queue_features=queue_features,
-                                                queue_labels=queue_labels) / (labels_query.sum(dim=1))
+                                                queue_labels=queue_labels) / (labels_query.sum(dim=1) + EPS)
     return loss_contrastive.mean()
 
 
