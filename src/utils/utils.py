@@ -108,9 +108,9 @@ def save_test_score(config: Dict[str, int], score: Dict[str, float]):
     with open(path_result, 'a') as f:
         for key, value in score.items():
             f.write(key + ' ' + str(value) + '\n')
-    os.remove(path=path_model)
-    os.remove(path=path_model_train)
-    os.remove(path=path_model_final)
+    for path in (path_model, path_model_train, path_model_final):
+        if os.path.exists(path):
+            os.remove(path)
 
 
 def compute_test_metrics(y_true: np.array, y_pred: np.array, add_str: str, nb_class: int):
