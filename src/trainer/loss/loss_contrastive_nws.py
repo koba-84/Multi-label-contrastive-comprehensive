@@ -5,6 +5,7 @@ import torch.nn.functional as F
 import numpy as np
 
 # Epsilon to avoid divided by 0
+DEVICE = 'cuda'
 EPS = 1e-8
 
 
@@ -85,66 +86,62 @@ def compute_loss_contrastive(
                            dtype=labels_query.dtype, device=labels_query.device)
 
     # Prepare key section
+    mask_and_key = None
     if key_features is not None and key_labels is not None and key_features.numel() > 0:
-        kfeat = key_features.to(dtype)
-        klabels = key_labels.to(labels_query.dtype)
+        key_features = key_features.to(dtype)
+        key_labels = key_labels.to(labels_query.dtype)
         # MSC-style mask_and/mask_or for numerator weights
-        mask_and_key = torch.einsum('ac,kc->akc', labels_query, klabels)
-        mask_or_key = compute_or(query_tensor=labels_query, key_tensor=klabels)
+        mask_and_key = torch.einsum('ac,kc->akc', labels_query, key_labels)
+        mask_or_key = compute_or(query_tensor=labels_query, key_tensor=key_labels)
         mask_or_key = mask_or_key.unsqueeze(2).clamp_min(1.0)
         mask_and_key = mask_and_key * (1 / mask_or_key) * alpha
         # Normalize denom per class
         normalize = normalize + mask_and_key.sum(dim=1)  # B x L
         # Queue will add later if exists; proto term added after sections collected
 
-        sim_qk = output_features @ kfeat.T  # B x K
-        parts_features.append(sim_qk)
-        section_lengths.append(kfeat.size(0))
+        similarity_query_key = output_features @ key_features.T  # B x K
+        parts_features.append(similarity_query_key)
+        section_lengths.append(key_features.size(0))
 
         # Pos/Neg masks for DCL
-        pos_mask_key = (labels_query @ klabels.T > 0).to(sim_qk.dtype)  # B x K
+        pos_mask_key = (labels_query @ key_labels.T > 0).to(similarity_query_key.dtype)  # B x K
         neg_mask_key = (1.0 - pos_mask_key)
         pos_masks.append(pos_mask_key)
         neg_masks.append(neg_mask_key)
-
-        # Placeholder for weights_key to be computed after we finalize normalize (will include queue/proto contributions)
-        weights_key = mask_and_key  # keep to compute after normalize full
     else:
-        kfeat = None
-        klabels = None
-        weights_key = None
+        key_features = None
+        key_labels = None
 
     # Prepare queue section
+    mask_and_queue = None
     if queue_features is not None and queue_labels is not None and queue_features.numel() > 0:
-        qfeat = queue_features.to(dtype)
-        qlabels = queue_labels.to(labels_query.dtype)
-        mask_and_queue = torch.einsum('ac,qc->aqc', labels_query, qlabels)
-        mask_or_queue = compute_or(query_tensor=labels_query, key_tensor=qlabels)
+        queue_features = queue_features.to(dtype)
+        queue_labels = queue_labels.to(labels_query.dtype)
+        mask_and_queue = torch.einsum('ac,qc->aqc', labels_query, queue_labels)
+        mask_or_queue = compute_or(query_tensor=labels_query, key_tensor=queue_labels)
         mask_or_queue = mask_or_queue.unsqueeze(2).clamp_min(1.0)
         mask_and_queue = mask_and_queue * (1 / mask_or_queue) * alpha
 
         normalize = normalize + mask_and_queue.sum(dim=1)
 
-        sim_qq = output_features @ qfeat.T  # B x Q
-        parts_features.append(sim_qq)
-        section_lengths.append(qfeat.size(0))
+        similarity_query_queue = output_features @ queue_features.T  # B x Q
+        parts_features.append(similarity_query_queue)
+        section_lengths.append(queue_features.size(0))
 
-        pos_mask_queue = (labels_query @ qlabels.T > 0).to(sim_qq.dtype)
+        pos_mask_queue = (labels_query @ queue_labels.T > 0).to(similarity_query_queue.dtype)
         neg_mask_queue = (1.0 - pos_mask_queue)
         pos_masks.append(pos_mask_queue)
         neg_masks.append(neg_mask_queue)
-
-        weights_queue = mask_and_queue
     else:
-        qfeat = None
-        qlabels = None
-        weights_queue = None
+        queue_features = None
+        queue_labels = None
+        mask_and_queue = None
 
     # Prototype section
-    sim_qp = output_features @ prototype_features.T  # B x L
-    parts_features.append(sim_qp)
+    similarity_query_proto = output_features @ prototype_features.T  # B x L
+    parts_features.append(similarity_query_proto)
     section_lengths.append(nb_labels)
-    pos_mask_proto = labels_query.to(sim_qp.dtype)  # B x L
+    pos_mask_proto = labels_query.to(similarity_query_proto.dtype)  # B x L
     neg_mask_proto = (1.0 - pos_mask_proto)
     pos_masks.append(pos_mask_proto)
     neg_masks.append(neg_mask_proto)
@@ -154,20 +151,19 @@ def compute_loss_contrastive(
 
     # Finalize numerator weights per section (sum over label dim then divide by normalize per class)
     denom = normalize.unsqueeze(1) + EPS  # B x 1 x L
-    parts_weights_list = []
-    if weights_key is not None:
-        w_key = (weights_key / denom).sum(dim=2)  # B x K
-        parts_weights_list.append(w_key)
-    if weights_queue is not None:
-        w_queue = (weights_queue / denom).sum(dim=2)  # B x Q
-        parts_weights_list.append(w_queue)
+    if mask_and_key is not None:
+        w_features_key = (mask_and_key / denom).sum(dim=2)  # B x K
+        parts_weights.append(w_features_key)
+    if mask_and_queue is not None:
+        w_features_queue = (mask_and_queue / denom).sum(dim=2)  # B x Q
+        parts_weights.append(w_features_queue)
     # Prototype weights
-    w_proto = labels_query / (normalize + EPS)  # B x L
-    parts_weights_list.append(w_proto)
+    w_features_proto = labels_query / (normalize + EPS)  # B x L
+    parts_weights.append(w_features_proto)
 
     # Concat features, weights, pos/neg masks
     final_features = torch.cat(parts_features, dim=1)
-    w_concat = torch.cat(parts_weights_list, dim=1)
+    w = torch.cat(parts_weights, dim=1)
     pos_mask_concat = torch.cat(pos_masks, dim=1)
     neg_mask_concat = torch.cat(neg_masks, dim=1)
 
@@ -185,44 +181,44 @@ def compute_loss_contrastive(
 
     a_ir_list = []
     # key
-    if klabels is not None:
+    if key_labels is not None:
         if agg == 'mean':
-            sim_agg_key = mean_agg(labels_query, klabels)
+            sim_agg_key = mean_agg(labels_query, key_labels)
         elif agg == 'max':
             # BxKxLxL mask and max
-            mask = labels_query.bool().unsqueeze(1).unsqueeze(3) & klabels.bool().unsqueeze(0).unsqueeze(2)
-            sim_all = S.unsqueeze(0).unsqueeze(0).expand(labels_query.size(0), klabels.size(0), -1, -1)
+            mask = labels_query.bool().unsqueeze(1).unsqueeze(3) & key_labels.bool().unsqueeze(0).unsqueeze(2)
+            sim_all = S.unsqueeze(0).unsqueeze(0).expand(labels_query.size(0), key_labels.size(0), -1, -1)
             sim_agg_key = sim_all.masked_fill(~mask, float('-inf')).amax(dim=(2, 3))
         else:
             raise ValueError('agg must be "mean" or "max"')
         a_key = 1.0 - sim_agg_key
         a_ir_list.append(a_key)
     # queue
-    if qlabels is not None:
+    if queue_labels is not None:
         if agg == 'mean':
-            sim_agg_queue = mean_agg(labels_query, qlabels)
+            sim_agg_queue = mean_agg(labels_query, queue_labels)
         elif agg == 'max':
-            mask = labels_query.bool().unsqueeze(1).unsqueeze(3) & qlabels.bool().unsqueeze(0).unsqueeze(2)
-            sim_all = S.unsqueeze(0).unsqueeze(0).expand(labels_query.size(0), qlabels.size(0), -1, -1)
+            mask = labels_query.bool().unsqueeze(1).unsqueeze(3) & queue_labels.bool().unsqueeze(0).unsqueeze(2)
+            sim_all = S.unsqueeze(0).unsqueeze(0).expand(labels_query.size(0), queue_labels.size(0), -1, -1)
             sim_agg_queue = sim_all.masked_fill(~mask, float('-inf')).amax(dim=(2, 3))
         else:
             raise ValueError('agg must be "mean" or "max"')
         a_queue = 1.0 - sim_agg_queue
         a_ir_list.append(a_queue)
     # proto: a_ir=1
-    a_proto = torch.ones_like(sim_qp)
+    a_proto = torch.ones_like(similarity_query_proto)
     a_ir_list.append(a_proto)
 
     a_ir_concat = torch.cat(a_ir_list, dim=1)
 
     # Denominator mask: negatives only, apply beta section coeff and a_ir
-    mask_denom = neg_mask_concat * normalize_mask.unsqueeze(0) * a_ir_concat
+    mask_diagonal = neg_mask_concat * normalize_mask.unsqueeze(0) * a_ir_concat
 
     # Numerator weights: only positives
-    w_numerator = w_concat * pos_mask_concat
+    w_numerator = w * pos_mask_concat
 
     # Compute masked log-softmax with temperature
-    log_softmax = log_softmax_temp(matrix=final_features, temp=temp, mask=mask_denom)
+    log_softmax = log_softmax_temp(matrix=final_features, temp=temp, mask=mask_diagonal)
     return - (log_softmax * w_numerator).sum(dim=1)
 
 
@@ -281,9 +277,9 @@ class LossContrastiveNWS(nn.Module):
     def __init__(self,
                  alpha: float,
                  beta: float,
-                 temp: float,
-                 agg: str,
-                 sim) -> None:
+                 sim,
+                 agg: str='mean',
+                 temp: float=0.07) -> None:
         super().__init__()
         self.alpha = alpha
         self.beta = beta
@@ -361,14 +357,11 @@ def compute_label_pair_similarity(Y, method: str):
         # PMI = log(p_ij / (p_i p_j)), NPMI = PMI / (-log p_ij)
         with np.errstate(divide='ignore', invalid='ignore'):
             denom = (p_i[:, None] * p_i[None, :])
-            PMI = np.log(p_ij / denom)
-            NPMI = PMI / (-np.log(p_ij))
+            PMI = np.log((p_ij + EPS) / (denom + EPS))
+            NPMI = PMI / (-np.log(p_ij + EPS))
         # map [-1,1] -> [0,1]
-        S = (NPMI + 1.0) / 2.0
-        S = np.nan_to_num(S, nan=0.0, posinf=0.0, neginf=0.0)
-        # symmetrize and set diag to 1
-        S = (S + S.T) / 2.0
-        np.fill_diagonal(S, 1.0)
+        S = np.maximum(NPMI, 0.0)
+        np.fill_diagonal(S, 0.0)
         return S.astype(np.float32)
     else:
         raise ValueError("method must be 'npmi' or 'jaccard'")

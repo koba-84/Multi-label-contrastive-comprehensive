@@ -74,6 +74,8 @@ def save_best_model_train(model: nn.Module, config: Dict[str, int]):
         current_score (float): float best score
     """
     path_save = os.path.join('save', config["name_save"])
+    if not os.path.exists(path_save):
+        os.makedirs(path_save)
     torch.save(model.state_dict(), os.path.join(path_save, 'model_train.pt'))
     
 

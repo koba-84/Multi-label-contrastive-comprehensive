@@ -1,7 +1,7 @@
 {
-    "dataset_name": ["aapd"],
-    "SEED": [1,2],
-    "lr": [2e-5],
+    "dataset_name": ["rcv1"],
+    "SEED": [0],
+    "lr": [2e-5, 5e-5],
     "lr_adding": [5e-5],
     "name_model": "roberta-base",
     "max_len": 300,
@@ -11,11 +11,14 @@
     "batch_size": [32],
     "temp": [0.1],
     "projection_dim": 256,
-    "beta": [0.1],
+    "beta": [1],
     "alpha": [0],
-    "loss" : ["base"],
+    "loss" : ["nws"],
     "task_type": "NLP",
     "queue_size": [512],
     "fraction": [0.5],
-    "freeze_encoder": [false]
+    "freeze_encoder": [false],
+    "run_ablation": false,
+    "sim_method": ["npmi", "jaccard"],
+    "agg": ["mean", "max"]
 }
