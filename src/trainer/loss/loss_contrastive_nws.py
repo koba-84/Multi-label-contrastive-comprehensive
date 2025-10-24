@@ -312,6 +312,10 @@ class LossContrastiveNWS(nn.Module):
         if queue_feats is not None and queue_labels is not None and queue_feats.numel() > 0:
             queue_features = F.normalize(queue_feats.detach().to(normalize_features_query.dtype), dim=-1, p=2)
             queue_labels_tensor = queue_labels.detach().to(labels_query.dtype)
+        # 評価時などでモーメンタムエンコーダやキューが利用できない場合、自身のバッチを参照に使う
+        if key_features is None and queue_features is None:
+            key_features = normalize_features_query.detach()
+            key_labels_tensor = labels_query.detach()
         # Move sim to proper device
         sim_matrix = self.sim.to(normalize_features_query.device)
         # Apply Contrastive function
