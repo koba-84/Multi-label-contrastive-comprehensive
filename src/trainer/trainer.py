@@ -439,7 +439,6 @@ def trainer(config: Dict, entity_name: str):
     cl_test_step = 0
     log_data = {"cl_test_step": cl_test_step}
     log_data.update(config_res)
-    wandb.log(log_data)
 
     # ablation study: evaluate embeddings
     run_ablation = config.get("run_ablation", True)
@@ -459,13 +458,13 @@ def trainer(config: Dict, entity_name: str):
             X_test, Y_test,
             keep_fraction=config["fraction"]  # 頻出ラベル組合せの上位50%
         )
-        wandb.log({
-            "cl_test_step": cl_test_step,
-            "silhouette_test": sil,
-            "dbi_test": dbi
-        })
+        # アブレーション結果も同じステップのログにまとめて送信する
+        log_data["silhouette_test"] = sil
+        log_data["dbi_test"] = dbi
     else:
         print("Skipping ablation study (run_ablation=False)")
+
+    wandb.log(log_data)
 
     wandb.finish()
     save_test_score(config, config_res)
