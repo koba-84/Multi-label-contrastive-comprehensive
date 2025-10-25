@@ -1,7 +1,7 @@
 {
     "dataset_name": ["rcv1"],
     "SEED": [0],
-    "lr": [2e-5, 5e-5],
+    "lr": [2e-5],
     "lr_adding": [5e-5],
     "name_model": "roberta-base",
     "max_len": 300,
@@ -19,6 +19,6 @@
     "fraction": [0.5],
     "freeze_encoder": [false],
     "run_ablation": false,
-    "sim_method": ["npmi", "jaccard"],
+    "sim_method": ["npmi"],
     "agg": ["mean", "max"]
 }

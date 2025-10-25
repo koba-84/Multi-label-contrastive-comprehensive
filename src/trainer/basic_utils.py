@@ -40,12 +40,12 @@ def compute_val_loss(model: nn.Module,
         # Contrastive depends a lot of batch, that is why the last is removed if 
        
         # Create current labels of the batch
-        current_labels = batch['labels'].to(DEVICE)
+        current_labels = batch['labels'].to(DEVICE).to(model.get_prototype().dtype)
         # Output features of the model
         if model.task_type == 'NLP':
              # it doesn't have the great size
             if batch['input_ids'].size(0) < batch_size_val_test:
-                remove = 1
+                remove += 1
                 continue
             output_query, _ = model(input_ids=batch['input_ids'].to(DEVICE),
                             attention_mask=batch['attention_mask'].to(DEVICE))

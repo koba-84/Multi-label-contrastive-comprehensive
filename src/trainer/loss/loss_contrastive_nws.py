@@ -367,5 +367,61 @@ def compute_label_pair_similarity(Y, method: str):
         S = np.maximum(NPMI, 0.0)
         np.fill_diagonal(S, 0.0)
         return S.astype(np.float32)
+    elif method == 'ppmi':
+        # PPMI + logistic compression
+        counts = Y_np.sum(axis=0).astype(np.float64)            # (L,)
+        p_i = counts / float(N)
+        counts_ij = (Y_np.T @ Y_np).astype(np.float64)          # (L,L)
+        p_ij = counts_ij / float(N)
+
+        with np.errstate(divide='ignore', invalid='ignore'):
+            denom = (p_i[:, None] * p_i[None, :])
+            PMI = np.log((p_ij + EPS) / (denom + EPS))          # (L,L)
+
+        # 統計量はオフダイアゴナル & 有限値から算出
+        offdiag = ~np.eye(PMI.shape[0], dtype=bool)
+        valid = np.isfinite(PMI) & offdiag
+        if np.any(valid):
+            mu = PMI[valid].mean()
+            sd = PMI[valid].std(ddof=0)
+        else:
+            mu, sd = 0.0, 1.0  # フォールバック
+
+        # ロジスティック圧縮（標準化後にσ）
+        Z = (PMI - mu) / (sd + EPS)
+        S = 1.0 / (1.0 + np.exp(-Z))
+
+        # PPMI化：負のPMIは寄与させない（0）
+        S[PMI <= 0] = 0.0
+
+        # 対角は類似度1.0に
+        np.fill_diagonal(S, 1.0)
+        return S.astype(np.float32)
+    elif method == 'pmi_ratio':
+        # Power-law-like similarity via cooccurrence ratio r = p_ij / (p_i p_j)
+        counts = Y_np.sum(axis=0).astype(np.float64)      # (L,)
+        Nf = float(N)
+        p_i = counts / Nf
+        counts_ij = (Y_np.T @ Y_np).astype(np.float64)    # (L,L)
+
+        # --- Dirichlet/Laplace平滑で連続化（λは小さめでOK） ---
+        lam = 1.0
+        p_ij = (counts_ij + lam) / (Nf + lam * 4.0)       # 2x2の4セル平滑の素朴版
+        denom = ( (counts + 2*lam) / (Nf + 2*lam) )
+        denom = denom[:, None] * denom[None, :]           # p(i)p(j) に相当
+
+        r = (p_ij) / (denom + EPS)                        # 比率 r = e^{PMI}
+
+        # --- 冪乗圧縮 + ロジスティックで(0,1)へ ---
+        alpha = 0.25                                      # ←尾を重くしたいなら 0.25〜0.5
+        r_alpha = np.power(r, alpha)
+
+        # 温度Tで滑らかさ調整（T>1でなだらかに）
+        T = 1.5
+        S = r_alpha / (1.0 + r_alpha)**(1.0/T)
+
+        np.fill_diagonal(S, 1.0)
+        return S.astype(np.float32)
+
     else:
-        raise ValueError("method must be 'npmi' or 'jaccard'")
+        raise ValueError("method must be 'npmi' or 'jaccard'") # noqa: E402
