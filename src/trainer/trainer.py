@@ -26,6 +26,7 @@ from .loss.loss_contrastive_mscrg import LossContrastiveMSCRG
 from .loss.loss_contrastive_mscwrg import LossContrastiveMSCWRG
 from .loss.loss_contrastive_mulsupcon import LossContrastiveMulSupCon
 from .loss.loss_contrastive_nws import LossContrastiveNWS, compute_label_pair_similarity
+from .loss.loss_contrastive_nwswd import LossContrastiveNWSWD
 from .loss.zlpr import Zlpr, AsymmetricLoss
 from .basic_utils import (compute_val_loss, create_dataloader_hidden_space,
                           traine_linear_classifier, traine_linear_classifier_end_to_end,
@@ -114,17 +115,17 @@ def trainer(config: Dict, entity_name: str):
         config['nb_labels'] = train_data.shape[1] - 2
         if config["loss"] == "bce":
             # print("=== BCE Training === ")
-            # train_BCE(config, dataloader_train, dataloader_val,
-            #           dataloader_test, entity_name, num_labels=config['nb_labels'], loss='bce',bce_loss='bce')
+            train_BCE(config, dataloader_train, dataloader_val,
+                       dataloader_test, entity_name, num_labels=config['nb_labels'], loss='bce',bce_loss='bce')
             # print("=== ZLPR Training === ")
             # train_BCE(config, dataloader_train, dataloader_val,
             #           dataloader_test, entity_name, num_labels=config['nb_labels'], loss='ZLPR',bce_loss='ZLPR')
-            print("=== Asymetric Training === ")
-            train_BCE(config, dataloader_train, dataloader_val,
-                      dataloader_test, entity_name, num_labels=config['nb_labels'], loss='asymetric',bce_loss='asymetric')
-            print("=== Focal Training === ")
-            train_BCE(config, dataloader_train, dataloader_val,
-                      dataloader_test, entity_name, num_labels=config['nb_labels'], loss='focal',bce_loss='focal')
+            # print("=== Asymetric Training === ")
+            # train_BCE(config, dataloader_train, dataloader_val,
+            #           dataloader_test, entity_name, num_labels=config['nb_labels'], loss='asymetric',bce_loss='asymetric')
+            # print("=== Focal Training === ")
+            # train_BCE(config, dataloader_train, dataloader_val,
+            #           dataloader_test, entity_name, num_labels=config['nb_labels'], loss='focal',bce_loss='focal')
             return 0
         
 
@@ -205,8 +206,8 @@ def trainer(config: Dict, entity_name: str):
     
     # NWS用のラベル類似度行列を事前計算
     sim_matrix_nws = None
-    if config["loss"] == "nws":
-        print("=== Computing label similarity matrix for NWS ===")
+    if config["loss"] in {"nws", "nwswd"}:
+        print("=== Computing label similarity matrix for NWS family ===")
         all_labels = []
         for batch in tqdm(dataloader_train, desc="Collecting labels"):
             all_labels.append(batch['labels'])
@@ -254,6 +255,13 @@ def trainer(config: Dict, entity_name: str):
             alpha=1, beta=config["beta"], temp=config['temp'],
             agg=config["agg"], sim=sim_matrix_nws)
         loss_contrastive_val = LossContrastiveNWS(
+            alpha=1, beta=config["beta"], temp=config['temp'],
+            agg=config["agg"], sim=sim_matrix_nws)
+    elif config["loss"] == "nwswd":
+        loss_contrastive = LossContrastiveNWSWD(
+            alpha=1, beta=config["beta"], temp=config['temp'],
+            agg=config["agg"], sim=sim_matrix_nws)
+        loss_contrastive_val = LossContrastiveNWSWD(
             alpha=1, beta=config["beta"], temp=config['temp'],
             agg=config["agg"], sim=sim_matrix_nws)
     else:
@@ -323,7 +331,7 @@ def trainer(config: Dict, entity_name: str):
                                labels_query=current_labels,
                                prototype=model.get_prototype())
 
-            if config["loss"] in {"mulsupcon", "msc", "nws"}:
+            if config["loss"] in {"mulsupcon", "msc", "nws", "nwswd"}:
                 loss_kwargs.update(queue_feats=queue_feats_for_loss,
                                    queue_labels=queue_labels_for_loss,
                                    key_feats=normalize_key,
@@ -581,12 +589,14 @@ def eval_model_finetune(step: int, name: str, model: nn.Module, dataloader_train
                                          device=DEVICE)
     config_res = compute_test_metrics(target_val.numpy(), pred_val.numpy(),
                                       add_str=name, nb_class=config['nb_labels'])
+    """
     wandb.log({
         "classifier/epoch": step,
         "classifier/val_f1_micro": config_res["f1 micro " + name],
         "classifier/val_f1_macro": config_res["f1 macro " + name],
         "classifier/val_hamming_loss": config_res["hamming_loss " + name]
     })
+    """
     print(config_res)
     return config_res["f1 micro " + name], linear_classifier
 

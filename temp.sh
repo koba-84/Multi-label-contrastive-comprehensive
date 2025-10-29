@@ -6,8 +6,8 @@ set -euo pipefail
 # ここだけ編集：終了後に実行したいコマンドを並べる
 # （1つでも複数でもOK。順番に実行されます）
 COMMANDS=(
-  'source ~/venv/bin/activate',
-  'cd src',
+  'source .venv/bin/activate'
+  'cd src'
   'uv run main.py --config config/config.json'
 )
 ############################################
